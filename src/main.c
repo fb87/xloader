@@ -6,8 +6,6 @@
 #define UART_DR   UART_BASE[0]
 #define UART_FR   UART_BASE[6]
 
-#define PASSTHROUGH_BUF_OFFSET 0x10000
-
 static void uart_putc(char c) {
     while (UART_FR & (1 << 5));
     UART_DR = c;
@@ -80,26 +78,6 @@ static int add_module_node(void* fdt, int parent, const char* name,
         fdt_setprop_string(fdt, node, "bootargs", bootargs);
 
     return 0;
-}
-
-static void copy_node_props(void* dst_fdt, int dst_off,
-                            void* src_fdt, int src_off) {
-    int prop;
-    fdt_for_each_property_offset(prop, src_fdt, src_off) {
-        int len;
-        const struct fdt_property* p = fdt_get_property_by_offset(src_fdt, prop, &len);
-        if (!p)
-            continue;
-        const char* pname = fdt_string(src_fdt, fdt32_to_cpu(p->nameoff));
-        fdt_setprop(dst_fdt, dst_off, pname, p->data, fdt32_to_cpu(p->len));
-    }
-    int sub;
-    fdt_for_each_subnode(sub, src_fdt, src_off) {
-        const char* sname = fdt_get_name(src_fdt, sub, NULL);
-        int new_sub = fdt_add_subnode(dst_fdt, dst_off, sname);
-        if (new_sub >= 0)
-            copy_node_props(dst_fdt, new_sub, src_fdt, sub);
-    }
 }
 
 void main(uint64_t dtb_ptr) {
@@ -235,56 +213,16 @@ void main(uint64_t dtb_ptr) {
                                 d->initrd_addr, d->initrd_size,
                                 compat_ramdisk, sizeof(compat_ramdisk), 0);
             }
-
-            if (d->num_passthrough && d->passthrough_off) {
-                if (d->num_passthrough > XEN_BUNDLE_MAX_PASSTHROUGH)
-                    goto fail;
-
-                void* pt_buf = (void*)_dtb_buffer + PASSTHROUGH_BUF_OFFSET;
-                ret = fdt_create_empty_tree(pt_buf, 0x10000);
-                if (ret < 0) {
-                    uart_puts("xloader: pt fdt_create failed\n");
-                    goto fail;
-                }
-
-                const char* p = (const char*)desc + d->passthrough_off;
-                int copied_any = 0;
-                for (uint32_t pi = 0; pi < d->num_passthrough; pi++) {
-                    int src_off = fdt_path_offset(host_fdt, p);
-                    if (src_off >= 0) {
-                        const char* nname = fdt_get_name(host_fdt, src_off, NULL);
-                        int new_off = fdt_add_subnode(pt_buf, 0, nname);
-                        if (new_off >= 0) {
-                            copy_node_props(pt_buf, new_off, host_fdt, src_off);
-                        }
-                        copied_any = 1;
-                        uart_puts("xloader: passthrough ");
-                        uart_puts(p);
-                        uart_putc('\n');
-                    } else {
-                        uart_puts("xloader: pt not found: ");
-                        uart_puts(p);
-                        uart_putc('\n');
-                    }
-                    p += strlen(p) + 1;
-                }
-
-                if (copied_any) {
-                    fdt_pack(pt_buf);
-                    char mname[32];
-                    fmt_node_name(mname, sizeof(mname), "module", mi++);
-                    static const char compat_dtb[] = "multiboot,device-tree";
-                    uint64_t pt_addr = (uint64_t)pt_buf;
-                    uint64_t pt_size = fdt_totalsize(pt_buf);
-                    add_module_node(patched_fdt, dom_node, mname,
-                                    pt_addr, pt_size,
-                                    compat_dtb, sizeof(compat_dtb), 0);
-                    uart_puts("xloader: dtb @ ");
-                    uart_hex(pt_addr);
-                    uart_puts(" size=");
-                    uart_hex(pt_size);
-                    uart_putc('\n');
-                }
+            if (d->dtb_addr && d->dtb_size) {
+                char mname[32];
+                fmt_node_name(mname, sizeof(mname), "module", mi++);
+                static const char compat_dtb[] = "multiboot,module\0multiboot,device-tree";
+                add_module_node(patched_fdt, dom_node, mname,
+                                d->dtb_addr, d->dtb_size,
+                                compat_dtb, sizeof(compat_dtb), 0);
+                uart_puts("xloader: passthrough dtb @ ");
+                uart_hex(d->dtb_addr);
+                uart_putc('\n');
             }
         }
     }

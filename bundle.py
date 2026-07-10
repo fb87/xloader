@@ -10,6 +10,7 @@ import json
 import os
 import string
 import struct
+import subprocess
 import sys
 
 PAGE_SIZE = 0x10000
@@ -118,19 +119,25 @@ def generate_domain_entries(domains, payload_addrs, payload_sizes):
         iaddr = payload_addrs[pi] if dom["initrd"] else 0
         isize = payload_sizes[pi] if dom["initrd"] else 0
         pi += 1 if dom["initrd"] else 0
+        daddr = payload_addrs[pi] if dom.get("dtb_path") else 0
+        dsize = payload_sizes[pi] if dom.get("dtb_path") else 0
+        pi += 1 if dom.get("dtb_path") else 0
 
         cmd = dom["cmdline"][:XEN_BUNDLE_CMDLINE_LEN - 1]
         pad = XEN_BUNDLE_CMDLINE_LEN - len(cmd) - 1
         npt = len(dom["passthrough"])
         passthrough_off = f"_domain_{i}_passthrough - _bundle_desc" if npt else "0"
 
+        dtb_addr_str = f"0x{daddr:x}" if daddr else "0"
+        dtb_size_str = str(dsize) if dsize else "0"
+
         parts.append(TEMPLATE_DOMAIN_ENTRY.substitute(
             KADDR=f"{kaddr:x}",
             KSIZE=str(ksize),
             IADDR=f"{iaddr:x}",
             ISIZE=str(isize),
-            DADDR="0",
-            DSIZE="0",
+            DADDR=dtb_addr_str,
+            DSIZE=dtb_size_str,
             MEM_KB=str(dom.get("memory_kb", 131072)),
             CMDLINE=cmd,
             CMDLINE_PAD=str(pad),
@@ -188,6 +195,58 @@ def generate_payload_sections(domains, field, kind):
     return "\n".join(lines)
 
 
+def build_passthrough_dtb(src_dtb, paths, dtc_path, output_path):
+    """Build a passthrough DTB with multiboot,device-tree format using dtc."""
+    if not paths or not dtc_path:
+        return False
+
+    dts = subprocess.check_output(
+        [dtc_path, "-I", "dtb", "-O", "dts", src_dtb], text=True
+    )
+
+    def extract_node(text, path):
+        parts = path.strip("/").split("/")
+        target = parts[-1]
+        depth = 0
+        in_target = False
+        lines = text.split("\n")
+        result = []
+        brace_count = 0
+        for line in lines:
+            stripped = line.strip()
+            if not in_target:
+                if stripped.startswith(target + " {"):
+                    in_target = True
+                    result.append(line)
+                    brace_count = stripped.count("{") - stripped.count("}")
+                    continue
+            else:
+                result.append(line)
+                brace_count += stripped.count("{") - stripped.count("}")
+                if brace_count <= 0:
+                    break
+        return "\n".join(result) if result else None
+
+    passthrough_dts = "/dts-v1/;\n/ {\n\tpassthrough {\n"
+    for p in paths:
+        node = extract_node(dts, p)
+        if node:
+            passthrough_dts += "\t\t" + node.replace("\n", "\n\t\t") + "\n"
+    passthrough_dts += "\t};\n};\n"
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".dts", delete=False) as f:
+        f.write(passthrough_dts)
+        dts_path = f.name
+    try:
+        subprocess.check_call(
+            [dtc_path, "-I", "dts", "-O", "dtb", "-o", output_path, dts_path]
+        )
+    finally:
+        os.unlink(dts_path)
+    return True
+
+
 def generate_payload_xen(xen_path):
     return (
         '.section .payload_xen, "ax"\n'
@@ -211,18 +270,251 @@ def generate_payload_dtbs(domains):
     return "\n".join(lines)
 
 
-_FDT_STRUCT_CACHE = {}
+def render_payloads(
+    path,
+    base,
+    payload_addrs,
+    payload_sizes,
+    xen_entry,
+    domains,
+    dom0_idx,
+    xen_path,
+    dtb_data,
+    ram_size,
+):
+    build_dir = os.path.dirname(path)
+    dom0_idx_val = dom0_idx if dom0_idx is not None else "~0"
+
+    dtb_ptr_line = "\t.quad _bundle_dtb_start" if dtb_data else "\t.quad 0"
+    dtb_size_line = f"\t.quad {len(dtb_data)}" if dtb_data else "\t.quad 0"
+
+    content = TEMPLATE_PAYLOADS.substitute(
+        MAGIC=f"{XEN_BUNDLE_MAGIC:016x}",
+        VERSION=str(XEN_BUNDLE_VERSION),
+        BASE_ADDR=f"{base:x}",
+        XEN_ADDR=f"{payload_addrs[0]:x}",
+        XEN_SIZE=str(payload_sizes[0]),
+        XEN_ENTRY=f"{xen_entry:x}",
+        NUM_DOMAINS=str(len(domains)),
+        DOM0_IDX=str(dom0_idx_val),
+        DTB_PTR_LINE=dtb_ptr_line,
+        DTB_SIZE_LINE=dtb_size_line,
+        RAM_SIZE=f"{ram_size:x}",
+        DOMAIN_ENTRIES=generate_domain_entries(domains, payload_addrs, payload_sizes),
+        PASSTHROUGH_BLOCK=generate_passthrough_block(domains),
+        DTB_BLOCK=generate_dtb_block(dtb_data, build_dir),
+        PAYLOAD_XEN=generate_payload_xen(xen_path),
+        PAYLOAD_KERNELS=generate_payload_sections(domains, "kernel", "kernel"),
+        PAYLOAD_INITRDS=generate_payload_sections(domains, "initrd", "initrd"),
+        PAYLOAD_DTBS=generate_payload_dtbs(domains),
+    )
+
+    with open(path, "w") as f:
+        f.write(content)
 
 
-def _parse_fdt(data):
-    if id(data) not in _FDT_STRUCT_CACHE:
-        hdr = {
-            "off_struct": struct.unpack_from(">I", data, 8)[0],
-            "off_strings": struct.unpack_from(">I", data, 12)[0],
-            "size_struct": struct.unpack_from(">I", data, 28)[0],
-            "size_strings": struct.unpack_from(">I", data, 32)[0],
-        }
-        _FDT_STRUCT_CACHE[id(data)] = hdr
-    return _FDT_STRUCT_CACHE[id(data)]
+def render_linker_script(path, base, payload_addrs, domains, dtb_size=0):
+    phdrs = []
+    sections = []
+    pi = 1
+
+    for i, dom in enumerate(domains):
+        if dom["kernel"]:
+            phdrs.append(f"  kernel{i} PT_LOAD;")
+            sections.append(
+                f"  .payload_{i}_kernel 0x{payload_addrs[pi]:x} : "
+                f"{{ *(.payload_{i}_kernel) }} :kernel{i}"
+            )
+            pi += 1
+        if dom["initrd"]:
+            phdrs.append(f"  initrd{i} PT_LOAD;")
+            sections.append(
+                f"  .payload_{i}_initrd 0x{payload_addrs[pi]:x} : "
+                f"{{ *(.payload_{i}_initrd) }} :initrd{i}"
+            )
+            pi += 1
+        if dom.get("dtb_path"):
+            phdrs.append(f"  dtb{i} PT_LOAD;")
+            sections.append(
+                f"  .payload_{i}_dtb 0x{payload_addrs[pi]:x} : "
+                f"{{ *(.payload_{i}_dtb) }} :dtb{i}"
+            )
+            pi += 1
+
+    dtb_phdr_line = (
+        "  .bundle_dtb : ALIGN(16) { *(.bundle_dtb) } :rodata" if dtb_size else ""
+    )
+
+    content = TEMPLATE_LDS.substitute(
+        BASE_ADDR=f"{base:x}",
+        XEN_ADDR=f"{payload_addrs[0]:x}",
+        DOMAIN_PHDRS="\n".join(phdrs),
+        DTB_PHDR_LINE=dtb_phdr_line,
+        DOMAIN_SECTIONS="\n".join(sections),
+    )
+
+    with open(path, "w") as f:
+        f.write(content)
 
 
+def write_bundle_json(path, xen_entry, payload_addrs, payload_sizes, payload_names):
+    data = {
+        "xen_entry": xen_entry,
+        "payload_addrs": [f"0x{a:x}" for a in payload_addrs],
+        "payload_sizes": [f"0x{s:x}" for s in payload_sizes],
+        "payload_names": payload_names,
+    }
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Xen Bundle Source Generator")
+    parser.add_argument(
+        "--base",
+        default="0x40000000",
+        help="Bundle base load address (default: 0x40000000)",
+    )
+    parser.add_argument("--xen", required=True, help="Xen ELF file")
+    parser.add_argument("--dtb", help="Embedded DTB file (generated by QEMU dumpdtb)")
+    parser.add_argument("--config", required=True, help="TOML domain config file")
+    parser.add_argument(
+        "--gen-dir",
+        default="build",
+        help="Output directory for generated assembly and linker script",
+    )
+    parser.add_argument("--ram-size", default="1G", help="Guest RAM size (default: 1G)")
+    parser.add_argument(
+        "--loader-size",
+        default="0x40000",
+        help="Estimated loader code size in bytes (hex), default 0x40000",
+    )
+    parser.add_argument(
+        "--dtc-path",
+        default=None,
+        help="Path to dtc binary for passthrough DTB generation",
+    )
+
+    args = parser.parse_args()
+    base = int(args.base, 16)
+
+    ram_size_str = args.ram_size.upper()
+    if ram_size_str.endswith("G"):
+        ram_size = int(ram_size_str[:-1]) * 0x40000000
+    elif ram_size_str.endswith("M"):
+        ram_size = int(ram_size_str[:-1]) * 0x100000
+    elif ram_size_str.endswith("K"):
+        ram_size = int(ram_size_str[:-1]) * 0x400
+    else:
+        ram_size = int(ram_size_str, 0)
+
+    xen_entry = elf_read_entry(args.xen)
+
+    try:
+        domains, dom0_idx = load_config(args.config)
+    except (RuntimeError, ValueError) as exc:
+        print(f"bundle: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not domains:
+        print("bundle: at least one configured domain is required", file=sys.stderr)
+        sys.exit(1)
+
+    dtb_data = None
+    if args.dtb:
+        raw = read_file(args.dtb)
+        if len(raw) >= 40:
+            off_dt_struct = struct.unpack_from(">I", raw, 8)[0]
+            off_dt_strings = struct.unpack_from(">I", raw, 12)[0]
+            size_dt_struct = struct.unpack_from(">I", raw, 28)[0]
+            size_dt_strings = struct.unpack_from(">I", raw, 32)[0]
+            true_end = max(
+                off_dt_struct + size_dt_struct, off_dt_strings + size_dt_strings
+            )
+            if 0 < true_end <= len(raw):
+                dtb_data = bytearray(raw[:true_end])
+                struct.pack_into(">I", dtb_data, 4, true_end)
+            else:
+                dtb_data = raw
+        else:
+            dtb_data = raw
+
+    build_dir = args.gen_dir
+    os.makedirs(build_dir, exist_ok=True)
+
+    payload_paths = [args.xen]
+    payload_names = ["xen"]
+
+    for i, dom in enumerate(domains):
+        if dom["kernel"]:
+            payload_paths.append(dom["kernel"])
+            payload_names.append("kernel")
+        if dom["initrd"]:
+            payload_paths.append(dom["initrd"])
+            payload_names.append("initrd")
+        if dom["passthrough"] and dtb_data and args.dtc_path:
+            dtb_path = os.path.join(build_dir, f"domain_{i}_passthrough.dtb")
+            if build_passthrough_dtb(args.dtb, dom["passthrough"], args.dtc_path, dtb_path):
+                payload_paths.append(dtb_path)
+                payload_names.append("dtb")
+                dom["dtb_path"] = dtb_path
+
+    payload_data = []
+    for p in payload_paths:
+        data = read_file(p)
+        payload_data.append(data)
+
+    loader_size = int(args.loader_size, 16)
+    loader_end = align(base + loader_size) + 0x20000 + 0x4000
+    if dtb_data:
+        loader_end += len(dtb_data)
+    loader_end = align(loader_end)
+    print(f"bundle: loader estimated end: 0x{loader_end:x}", file=sys.stderr)
+
+    next_addr = align(loader_end)
+    payload_addrs = []
+    payload_sizes = []
+    for i, data in enumerate(payload_data):
+        payload_addrs.append(next_addr)
+        payload_sizes.append(len(data))
+        gap_size = len(data) + (0x100000 if i == 0 else 0)
+        next_addr = align(next_addr + gap_size)
+
+    if not xen_entry:
+        xen_entry = payload_addrs[0]
+        print(
+            f"bundle: using Xen load address as entry: 0x{xen_entry:x}", file=sys.stderr
+        )
+
+    print(f"bundle: {len(payload_data)} payloads", file=sys.stderr)
+    for i, (name, addr, size) in enumerate(
+        zip(payload_names, payload_addrs, payload_sizes)
+    ):
+        print(f"  {i}: {name} @ 0x{addr:x} ({size} bytes)", file=sys.stderr)
+
+    payloads_s = os.path.join(build_dir, "payloads.S")
+    render_payloads(
+        payloads_s,
+        base,
+        payload_addrs,
+        payload_sizes,
+        xen_entry,
+        domains,
+        dom0_idx,
+        args.xen,
+        dtb_data,
+        ram_size,
+    )
+
+    lds_path = os.path.join(build_dir, "xloader.lds")
+    dtb_size = len(dtb_data) if dtb_data else 0
+    render_linker_script(lds_path, base, payload_addrs, domains, dtb_size)
+
+    meta_path = os.path.join(build_dir, "bundle.json")
+    write_bundle_json(meta_path, xen_entry, payload_addrs, payload_sizes, payload_names)
+
+    print(f"bundle: sources → {build_dir}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

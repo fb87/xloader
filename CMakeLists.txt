@@ -37,16 +37,26 @@ FetchContent_Declare(dtc
 FetchContent_GetProperties(dtc)
 if(NOT dtc_POPULATED)
   FetchContent_Populate(dtc)
-  # Patch libfdt_env.h to remove <stdlib.h> (not available in freestanding)
-  set(LIBFDT_ENV_PATH "${dtc_SOURCE_DIR}/libfdt/libfdt_env.h")
-  file(READ "${LIBFDT_ENV_PATH}" LIBFDT_ENV_CONTENT)
-  if("#include <stdlib.h>" IN_LIST LIBFDT_ENV_CONTENT)
-    string(REPLACE "#include <stdlib.h>"
-                   "/* patched for freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
-    file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
-  endif()
 endif()
 set(XLOADER_LIBFDT_SRC_DIR "${dtc_SOURCE_DIR}/libfdt")
+
+# Build dtc binary for passthrough DTB generation
+# dtc builds in-source (no O= support).  After building, patch
+# libfdt_env.h so -nostdlib builds can find it too.
+set(XLOADER_DTC_BINARY "${dtc_SOURCE_DIR}/dtc")
+add_custom_command(
+  OUTPUT ${XLOADER_DTC_BINARY}
+  COMMAND ${CMAKE_COMMAND} -E env CROSS_COMPILE= make -C ${dtc_SOURCE_DIR} dtc
+  COMMAND ${CMAKE_COMMAND} -E env
+    sh -c "sed -i 's|#include <stdlib.h>|/* freestanding */|' '${dtc_SOURCE_DIR}/libfdt/libfdt_env.h'"
+  DEPENDS ${dtc_SOURCE_DIR}/Makefile
+  COMMENT "Building dtc for passthrough DTB generation"
+  VERBATIM
+)
+
+# Inject abort() declaration via -include so libfdt compiles with -nostdlib
+file(WRITE ${CMAKE_BINARY_DIR}/compiler.h "#include <stddef.h>\nchar *strrchr(const char *s, int c);\nvoid abort(void);\n")
+add_custom_target(dtc-bin DEPENDS ${XLOADER_DTC_BINARY})
 
 if(XLOADER_FETCH_EXTERNALS)
   FetchContent_Declare(xen
@@ -144,6 +154,14 @@ set(XLOADER_CFLAGS
   -Wall -Wextra -Werror
 )
 
+set(LIBFDT_CFLAGS
+  -ffreestanding -march=armv8-a
+  -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
+  -I${XLOADER_LIBFDT_SRC_DIR}
+  -include ${CMAKE_BINARY_DIR}/compiler.h
+  -Wall -Wextra -Werror
+)
+
 set(XLOADER_LIBFDT_SOURCES
   fdt.c fdt_ro.c fdt_rw.c fdt_sw.c fdt_wip.c
   fdt_strerror.c fdt_empty_tree.c fdt_addresses.c
@@ -185,7 +203,7 @@ foreach(libfdt_src ${XLOADER_LIBFDT_SOURCES})
   add_custom_command(
     OUTPUT ${XLOADER_BUILD_DIR}/libfdt_${basename}.o
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
-    COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${XLOADER_LIBFDT_SRC_DIR}/${libfdt_src} -o ${XLOADER_BUILD_DIR}/libfdt_${basename}.o
+    COMMAND ${XLOADER_CROSS_PREFIX}gcc ${LIBFDT_CFLAGS} -c ${XLOADER_LIBFDT_SRC_DIR}/${libfdt_src} -o ${XLOADER_BUILD_DIR}/libfdt_${basename}.o
     DEPENDS ${XLOADER_LIBFDT_SRC_DIR}/${libfdt_src}
     VERBATIM
   )
@@ -244,6 +262,7 @@ add_custom_command(
           --config=${XLOADER_DOMAIN_CONFIG}
           --dtb=${XLOADER_DTB}
           --ram-size=${XLOADER_QEMU_MEM}
+          --dtc-path=${XLOADER_DTC_BINARY}
   DEPENDS ${XLOADER_DTB} ${XLOADER_XEN_IMAGE}
           ${XLOADER_DOMAIN0_KERNEL} ${XLOADER_DOMAIN1_KERNEL}
           ${XLOADER_DOMAIN0_INITRD} ${XLOADER_DOMAIN1_INITRD}
@@ -252,6 +271,7 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/bundle_payloads.S.in
           ${CMAKE_SOURCE_DIR}/bundle_xloader.lds.in
           ${CMAKE_SOURCE_DIR}/bundle_domain_entry.S.in
+          ${XLOADER_DTC_BINARY}
   COMMENT "Generating bundle sources (payloads.S, xloader.lds)"
   VERBATIM
 )
@@ -284,6 +304,7 @@ add_custom_target(bundle DEPENDS ${XLOADER_BUNDLE})
 if(XLOADER_FETCH_EXTERNALS)
   add_dependencies(bundle xen-arm64 linux-arm64 busybox-initramfs)
 endif()
+add_dependencies(bundle dtc-bin)
 
 add_custom_target(run-qemu-dom0less
   COMMAND ${CMAKE_COMMAND} -E env

@@ -47,5 +47,6 @@ grep -q 'XLOADER_DOMAIN_READY' "${combined}"
 grep -q 'DOM2: XLOADER_DOMAIN_READY' "${combined}"
 grep -q '~ #' "${combined}"
 grep -q 'DOM2: XLOADER_DOMAIN_INTERACTIVE console=ttyAMA0' "${combined}"
+grep -q 'XLOADER_PASSTHROUGH_DEV=pl031@9010000' "${combined}"
 
 printf 'dom0less smoke test passed; logs in %s\n' "${LOG_DIR}"

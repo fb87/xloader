@@ -36,8 +36,9 @@ console=/dev/ttyAMA0
 console_name="${console#/dev/}"
 
 echo "XLOADER_DOMAIN_READY" >"${console}" 2>/dev/null || true
-find /proc/device-tree -name 'pl031@9010000' -maxdepth 5 2>/dev/null \
-  | head -1 | xargs -r echo "XLOADER_PASSTHROUGH_DEV=" >"${console}" 2>/dev/null
+for pt in /proc/device-tree/passthrough/*; do
+  [ -d "$pt" ] && echo "XLOADER_PASSTHROUGH_DEV=${pt##*/}" >"${console}" 2>/dev/null || true
+done
 echo "XLOADER_DOMAIN_INTERACTIVE console=${console_name}" >"${console}" 2>/dev/null || true
 (setsid sh -c 'exec sh </dev/ttyAMA0 >/dev/ttyAMA0 2>&1' 2>/dev/null || \
   setsid sh -c 'exec sh </dev/hvc0 >/dev/hvc0 2>&1') &
