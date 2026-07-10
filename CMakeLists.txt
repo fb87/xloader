@@ -40,9 +40,11 @@ if(NOT dtc_POPULATED)
   # Patch libfdt_env.h to remove <stdlib.h> (not available in freestanding)
   set(LIBFDT_ENV_PATH "${dtc_SOURCE_DIR}/libfdt/libfdt_env.h")
   file(READ "${LIBFDT_ENV_PATH}" LIBFDT_ENV_CONTENT)
-  string(REPLACE "#include <stdlib.h>"
-                 "/* patched for freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
-  file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
+  if("#include <stdlib.h>" IN_LIST LIBFDT_ENV_CONTENT)
+    string(REPLACE "#include <stdlib.h>"
+                   "/* patched for freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
+    file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
+  endif()
 endif()
 set(XLOADER_LIBFDT_SRC_DIR "${dtc_SOURCE_DIR}/libfdt")
 
@@ -173,7 +175,7 @@ foreach(src string main)
     OUTPUT ${XLOADER_BUILD_DIR}/${src}.o
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
     COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${CMAKE_SOURCE_DIR}/src/${src}.c -o ${XLOADER_BUILD_DIR}/${src}.o
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/include/bundle.h
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/include/bundle.h ${XLOADER_LIBFDT_SRC_DIR}/libfdt.h
     VERBATIM
   )
 endforeach()

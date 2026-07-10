@@ -137,8 +137,10 @@ void main(uint64_t dtb_ptr) {
 
     void* patched_fdt = &_dtb_buffer;
     int ret = fdt_open_into(host_fdt, patched_fdt, 0x20000);
-    if (ret < 0)
+    if (ret < 0) {
+        uart_puts("xloader: fdt_open_into failed\n");
         goto fail;
+    }
 
     int chosen_off = fdt_path_offset(patched_fdt, "/chosen");
     if (chosen_off < 0) {
@@ -198,7 +200,7 @@ void main(uint64_t dtb_ptr) {
             uart_putc('\n');
 
             char name[32];
-            snprintf(name, sizeof(name), "domain@%x", i);
+            fmt_node_name(name, sizeof(name), "domain", i);
             int dom_node = fdt_add_subnode(patched_fdt, chosen_off, name);
             if (dom_node < 0)
                 continue;
@@ -227,7 +229,7 @@ void main(uint64_t dtb_ptr) {
             int mi = 0;
             if (d->kernel_addr && d->kernel_size) {
                 char mname[32];
-                snprintf(mname, sizeof(mname), "module@%x", mi++);
+                fmt_node_name(mname, sizeof(mname), "module", mi++);
                 static const char compat_kernel[] = "multiboot,module\0multiboot,kernel";
                 add_module_node(patched_fdt, dom_node, mname,
                                 d->kernel_addr, d->kernel_size,
@@ -236,7 +238,7 @@ void main(uint64_t dtb_ptr) {
             }
             if (d->initrd_addr && d->initrd_size) {
                 char mname[32];
-                snprintf(mname, sizeof(mname), "module@%x", mi++);
+                fmt_node_name(mname, sizeof(mname), "module", mi++);
                 static const char compat_ramdisk[] = "multiboot,module\0multiboot,ramdisk";
                 add_module_node(patched_fdt, dom_node, mname,
                                 d->initrd_addr, d->initrd_size,
