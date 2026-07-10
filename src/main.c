@@ -94,10 +94,10 @@ void main(uint64_t dtb_ptr) {
     {
         int ne = node_end(patched_fdt, chosen_off);
         if (ne > 0) {
-            char pbuf[128];
+            char pbuf[192];
             int po = 0;
-            int no = dtb_add_string(patched_fdt, "bootargs");
-            static const char xen_cmdline[] = "sync_console dom0_mem=256M";
+            int no = dtb_add_string(patched_fdt, "xen,xen-bootargs");
+            static const char xen_cmdline[] = "sync_console loglvl=all guest_loglvl=all dom0_mem=256M";
             dtb_wr32(pbuf + po, FDT_PROP); po += 4;
             dtb_wr32(pbuf + po, sizeof(xen_cmdline)); po += 4;
             dtb_wr32(pbuf + po, no); po += 4;

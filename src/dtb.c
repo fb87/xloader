@@ -297,6 +297,10 @@ static int build_domain_node(char *buf, void *fdt, void *src_fdt,
         ck[2] = __builtin_bswap32((uint32_t)ksize);
         nno = dtb_add_string(fdt, "reg");
         mo += w_prop(mbuf + mo, nno, ck, 12);
+        if (cmdline && *cmdline) {
+            nno = dtb_add_string(fdt, "bootargs");
+            mo += w_prop(mbuf + mo, nno, cmdline, strlen(cmdline) + 1);
+        }
         mo += w_end_node(mbuf + mo);
         memcpy(buf + o, mbuf, mo); o += mo;
     }

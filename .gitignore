@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 busybox-*.tar.bz2
 xen-src/
+_deps/
+*.cpio
+*.dtb
+*.elf
+Image
+xen.elf
