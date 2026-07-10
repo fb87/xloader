@@ -227,11 +227,44 @@ def build_passthrough_dtb(src_dtb, paths, dtc_path, output_path):
                     break
         return "\n".join(result) if result else None
 
-    passthrough_dts = "/dts-v1/;\n/ {\n\tpassthrough {\n"
+    passthrough_dts = ("/dts-v1/;\n"
+        "/ {\n"
+        "\t#address-cells = <0x02>;\n"
+        "\t#size-cells = <0x02>;\n"
+        "\tpassthrough {\n")
     for p in paths:
         node = extract_node(dts, p)
         if node:
-            passthrough_dts += "\t\t" + node.replace("\n", "\n\t\t") + "\n"
+            lines = node.split("\n")
+            reg_line = ""
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("reg ="):
+                    reg_line = stripped
+                    break
+            # xen,reg format: <host_addr_hi host_addr_lo size_hi size_lo guest_addr_hi guest_addr_lo>
+            xen_reg_val = ""
+            if reg_line:
+                core = reg_line[5:].strip().rstrip(";").strip()
+                parts = core.strip("<>").split()
+                if len(parts) >= 4:
+                    addr_hi = parts[0]
+                    addr_lo = parts[1]
+                    sz_hi = parts[2]
+                    sz_lo = parts[3]
+                    xen_reg_val = f"<{addr_hi} {addr_lo} {sz_hi} {sz_lo} {addr_hi} {addr_lo}>"
+            xen_path_line = f'\t\txen,path = "{p}";'
+            xen_reg_line = f"\t\txen,reg = {xen_reg_val};" if xen_reg_val else ""
+            xen_force_line = "\t\txen,force-assign-without-iommu;"
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip() == "};":
+                    if xen_reg_line:
+                        lines.insert(i, xen_reg_line)
+                    lines.insert(i, xen_path_line)
+                    lines.insert(i, xen_force_line)
+                    break
+            modified = "\n".join(lines)
+            passthrough_dts += "\t\t" + modified.replace("\n", "\n\t\t") + "\n"
     passthrough_dts += "\t};\n};\n"
 
     import tempfile
