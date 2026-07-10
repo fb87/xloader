@@ -80,36 +80,6 @@ static int add_module_node(void* fdt, int parent, const char* name,
     return 0;
 }
 
-static void copy_passthrough_node(void* dst_fdt, void* src_fdt,
-                                  const char* path, int dst_parent) {
-    int src_off = fdt_path_offset(src_fdt, path);
-    if (src_off < 0) {
-        uart_puts("xloader: passthrough not found: ");
-        uart_puts(path);
-        uart_putc('\n');
-        return;
-    }
-
-    const char* name = fdt_get_name(src_fdt, src_off, NULL);
-    int new_off = fdt_add_subnode(dst_fdt, dst_parent, name);
-    if (new_off < 0)
-        return;
-
-    int prop;
-    fdt_for_each_property_offset(prop, src_fdt, src_off) {
-        int len;
-        const struct fdt_property* p = fdt_get_property_by_offset(src_fdt, prop, &len);
-        if (!p)
-            continue;
-        const char* pname = fdt_string(src_fdt, fdt32_to_cpu(p->nameoff));
-        fdt_setprop(dst_fdt, new_off, pname, p->data, fdt32_to_cpu(p->len));
-    }
-
-    int sub;
-    fdt_for_each_subnode(sub, src_fdt, src_off) {
-        copy_passthrough_node(dst_fdt, src_fdt, "", new_off);
-    }
-}
 
 void main(uint64_t dtb_ptr) {
     struct xen_bundle_desc* desc = (struct xen_bundle_desc*)&_bundle_desc;
@@ -244,25 +214,14 @@ void main(uint64_t dtb_ptr) {
                                 d->initrd_addr, d->initrd_size,
                                 compat_ramdisk, sizeof(compat_ramdisk), 0);
             }
-
-            const char* paths[XEN_BUNDLE_MAX_PASSTHROUGH];
-            int np = 0;
-            if (d->num_passthrough > XEN_BUNDLE_MAX_PASSTHROUGH)
-                goto fail;
-            if (d->num_passthrough) {
-                if (!d->passthrough_off)
-                    goto fail;
-                const char* p = (const char*)desc + d->passthrough_off;
-                for (uint32_t pi = 0; pi < d->num_passthrough; pi++) {
-                    paths[np++] = p;
-                    uart_puts("xloader: passthrough ");
-                    uart_puts(p);
-                    uart_putc('\n');
-                    p += strlen(p) + 1;
-                }
+            if (d->dtb_addr && d->dtb_size) {
+                char mname[32];
+                fmt_node_name(mname, sizeof(mname), "module", mi++);
+                static const char compat_dtb[] = "multiboot,device-tree";
+                add_module_node(patched_fdt, dom_node, mname,
+                                d->dtb_addr, d->dtb_size,
+                                compat_dtb, sizeof(compat_dtb), 0);
             }
-            for (int pi = 0; pi < np; pi++)
-                copy_passthrough_node(patched_fdt, host_fdt, paths[pi], dom_node);
         }
     }
 

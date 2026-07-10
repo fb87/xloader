@@ -118,25 +118,31 @@ def generate_domain_entries(domains, payload_addrs, payload_sizes):
         iaddr = payload_addrs[pi] if dom["initrd"] else 0
         isize = payload_sizes[pi] if dom["initrd"] else 0
         pi += 1 if dom["initrd"] else 0
+        daddr = payload_addrs[pi] if dom.get("dtb_path") else 0
+        dsize = payload_sizes[pi] if dom.get("dtb_path") else 0
+        pi += 1 if dom.get("dtb_path") else 0
 
-        cmd = dom["cmdline"][: XEN_BUNDLE_CMDLINE_LEN - 1]
+        cmd = dom["cmdline"][:XEN_BUNDLE_CMDLINE_LEN - 1]
         pad = XEN_BUNDLE_CMDLINE_LEN - len(cmd) - 1
         npt = len(dom["passthrough"])
         passthrough_off = f"_domain_{i}_passthrough - _bundle_desc" if npt else "0"
 
-        parts.append(
-            TEMPLATE_DOMAIN_ENTRY.substitute(
-                KADDR=f"{kaddr:x}",
-                KSIZE=str(ksize),
-                IADDR=f"{iaddr:x}",
-                ISIZE=str(isize),
-                MEM_KB=str(dom.get("memory_kb", 131072)),
-                CMDLINE=cmd,
-                CMDLINE_PAD=str(pad),
-                NPT=str(npt),
-                PASSTHROUGH_OFF=passthrough_off,
-            )
-        )
+        dtb_addr_str = f"0x{daddr:x}" if daddr else "0"
+        dtb_size_str = str(dsize) if dsize else "0"
+
+        parts.append(TEMPLATE_DOMAIN_ENTRY.substitute(
+            KADDR=f"{kaddr:x}",
+            KSIZE=str(ksize),
+            IADDR=f"{iaddr:x}",
+            ISIZE=str(isize),
+            DADDR=dtb_addr_str,
+            DSIZE=dtb_size_str,
+            MEM_KB=str(dom.get("memory_kb", 131072)),
+            CMDLINE=cmd,
+            CMDLINE_PAD=str(pad),
+            NPT=str(npt),
+            PASSTHROUGH_OFF=passthrough_off,
+        ))
     return "\n".join(parts)
 
 
@@ -198,6 +204,185 @@ def generate_payload_xen(xen_path):
     )
 
 
+def generate_payload_dtbs(domains):
+    lines = []
+    for i, dom in enumerate(domains):
+        dtb_path = dom.get("dtb_path")
+        if dtb_path:
+            lines.append(f".section .payload_{i}_dtb, \"ax\"")
+            lines.append(f".globl _payload_{i}_dtb_start")
+            lines.append(f"_payload_{i}_dtb_start:")
+            lines.append(f'.incbin "{dtb_path}"')
+            lines.append(f"_payload_{i}_dtb_end:")
+    return "\n".join(lines)
+
+
+_FDT_STRUCT_CACHE = {}
+
+
+def _parse_fdt(data):
+    if id(data) not in _FDT_STRUCT_CACHE:
+        hdr = {
+            "off_struct": struct.unpack_from(">I", data, 8)[0],
+            "off_strings": struct.unpack_from(">I", data, 12)[0],
+            "size_struct": struct.unpack_from(">I", data, 28)[0],
+            "size_strings": struct.unpack_from(">I", data, 32)[0],
+        }
+        _FDT_STRUCT_CACHE[id(data)] = hdr
+    return _FDT_STRUCT_CACHE[id(data)]
+
+
+def _fdt_tag(data, off):
+    return struct.unpack_from(">I", data, off)[0]
+
+
+def _fdt_skip_name(data, off):
+    off += 4
+    while data[off]:
+        off += 1
+    return (off + 4) & ~3
+
+
+def _fdt_skip_prop(data, off):
+    plen = struct.unpack_from(">I", data, off + 4)[0]
+    return off + 12 + ((plen + 3) & ~3)
+
+
+def _fdt_find_node(data, off_struct, path):
+    parts = path.strip("/").split("/")
+    pos = off_struct
+    pos = _fdt_skip_name(data, pos)
+    for name in parts:
+        while True:
+            t = _fdt_tag(data, pos)
+            if t == 0x00000001:
+                ns = pos + 4
+                ne = data.index(b"\0", ns)
+                nn = data[ns:ne].decode()
+                if nn == name:
+                    pos = pos
+                    break
+                pos = _fdt_skip_node(data, pos)
+            elif t == 0x00000002:
+                pos += 4
+            elif t == 0x00000009:
+                return None
+            else:
+                pos += 4
+    return pos
+
+
+def _fdt_skip_node(data, pos):
+    pos = _fdt_skip_name(data, pos)
+    depth = 1
+    while depth > 0:
+        t = _fdt_tag(data, pos)
+        if t == 0x00000001:
+            pos = _fdt_skip_name(data, pos)
+            depth += 1
+        elif t == 0x00000002:
+            pos += 4
+            depth -= 1
+        elif t == 0x00000003:
+            pos = _fdt_skip_prop(data, pos)
+        else:
+            pos += 4
+    return pos
+
+
+def _fdt_copy_node(data, off_struct, off_strings, str_base, pos,
+                   dst_struct, dst_strings, string_map):
+    """Copy a node from source FDT to destination, remapping string references."""
+
+    def map_string(old_off):
+        if old_off not in string_map:
+            end = str_base.index(b"\0", old_off)
+            s = str_base[old_off:end].decode()
+            new_off = len(dst_strings)
+            dst_strings.extend(s.encode())
+            dst_strings.extend(b"\0")
+            string_map[old_off] = new_off
+        return string_map[old_off]
+
+    t = _fdt_tag(data, pos)
+    if t != 0x00000001:
+        return
+
+    name_start = pos + 4
+    name_end = data.index(b"\0", name_start)
+    name_len = ((name_end - name_start + 4) & ~3) + 4
+    dst_struct.extend(data[pos:pos + name_len])
+    pos += name_len
+
+    while True:
+        t = _fdt_tag(data, pos)
+        if t == 0x00000001:
+            _fdt_copy_node(data, off_struct, off_strings, str_base, pos,
+                           dst_struct, dst_strings, string_map)
+            pos = _fdt_skip_node(data, pos)
+        elif t == 0x00000002:
+            dst_struct.extend(b"\x02\x00\x00\x00")
+            return
+        elif t == 0x00000003:
+            plen = struct.unpack_from(">I", data, pos + 4)[0]
+            noff = struct.unpack_from(">I", data, pos + 8)[0]
+            val_align = ((plen + 3) & ~3) + 12
+            dst_struct.extend(data[pos:pos + 12])
+            new_noff = map_string(noff)
+            struct.pack_into(">I", dst_struct, len(dst_struct) - 4, new_noff)
+            dst_struct.extend(data[pos + 12:pos + 12 + (plen + 3) & ~3])
+            pos += val_align
+        elif t == 0x00000009:
+            return
+        else:
+            pos += 4
+
+
+def build_passthrough_dtb(src_data, paths):
+    """Build a minimal DTB containing only the specified node paths from src."""
+    if not paths:
+        return None
+    hdr = _parse_fdt(src_data)
+    off_struct = hdr["off_struct"]
+    off_strings = hdr["off_strings"]
+    str_base = src_data[off_strings:off_strings + hdr["size_strings"]]
+
+    dst_struct = bytearray()
+    dst_strings = bytearray()
+    string_map = {}
+    string_map[0] = 0
+    dst_strings.extend(b"\0")
+
+    dst_struct.extend(b"\x01\x00\x00\x00\x00\x00\x00\x00")
+
+    for path in paths:
+        node_pos = _fdt_find_node(src_data, off_struct, path)
+        if node_pos is None:
+            print(f"bundle: warning: passthrough path '{path}' not found", file=sys.stderr)
+            continue
+        _fdt_copy_node(src_data, off_struct, off_strings, str_base, node_pos,
+                       dst_struct, dst_strings, string_map)
+
+    dst_struct.extend(b"\x02\x00\x00\x00")
+    dst_struct.extend(b"\x09\x00\x00\x00")
+
+    sz_struct = len(dst_struct)
+    sz_strings = len(dst_strings)
+    totalsize = 40 + 16 + sz_struct + sz_strings
+
+    header = struct.pack(">IIIIIIIIII",
+                          0xD00DFEED,
+                          totalsize,
+                          56,  # off_dt_struct
+                          56 + sz_struct,  # off_dt_strings
+                          40,  # off_mem_rsvmap
+                          17, 16, 0,
+                          sz_strings,
+                          sz_struct)
+    rsvmap = struct.pack(">QQ", 0, 0)
+    return bytes(header + rsvmap + dst_struct + dst_strings)
+
+
 def render_payloads(
     path,
     base,
@@ -234,6 +419,7 @@ def render_payloads(
         PAYLOAD_XEN=generate_payload_xen(xen_path),
         PAYLOAD_KERNELS=generate_payload_sections(domains, "kernel", "kernel"),
         PAYLOAD_INITRDS=generate_payload_sections(domains, "initrd", "initrd"),
+        PAYLOAD_DTBS=generate_payload_dtbs(domains),
     )
 
     with open(path, "w") as f:
@@ -258,6 +444,13 @@ def render_linker_script(path, base, payload_addrs, domains, dtb_size=0):
             sections.append(
                 f"  .payload_{i}_initrd 0x{payload_addrs[pi]:x} : "
                 f"{{ *(.payload_{i}_initrd) }} :initrd{i}"
+            )
+            pi += 1
+        if dom.get("dtb_path"):
+            phdrs.append(f"  dtb{i} PT_LOAD;")
+            sections.append(
+                f"  .payload_{i}_dtb 0x{payload_addrs[pi]:x} : "
+                f"{{ *(.payload_{i}_dtb) }} :dtb{i}"
             )
             pi += 1
 
@@ -335,21 +528,6 @@ def main():
         print("bundle: at least one configured domain is required", file=sys.stderr)
         sys.exit(1)
 
-    payload_paths = [args.xen]
-    payload_names = ["xen"]
-    for dom in domains:
-        if dom["kernel"]:
-            payload_paths.append(dom["kernel"])
-            payload_names.append("kernel")
-        if dom["initrd"]:
-            payload_paths.append(dom["initrd"])
-            payload_names.append("initrd")
-
-    payload_data = []
-    for p in payload_paths:
-        data = read_file(p)
-        payload_data.append(data)
-
     dtb_data = None
     if args.dtb:
         raw = read_file(args.dtb)
@@ -368,6 +546,34 @@ def main():
                 dtb_data = raw
         else:
             dtb_data = raw
+
+    build_dir = args.gen_dir
+    os.makedirs(build_dir, exist_ok=True)
+
+    payload_paths = [args.xen]
+    payload_names = ["xen"]
+
+    for i, dom in enumerate(domains):
+        if dom["kernel"]:
+            payload_paths.append(dom["kernel"])
+            payload_names.append("kernel")
+        if dom["initrd"]:
+            payload_paths.append(dom["initrd"])
+            payload_names.append("initrd")
+        if dom["passthrough"] and dtb_data:
+            dtb_path = os.path.join(build_dir, f"domain_{i}_passthrough.dtb")
+            passthrough_dtb = build_passthrough_dtb(bytes(dtb_data), dom["passthrough"])
+            if passthrough_dtb:
+                with open(dtb_path, "wb") as f:
+                    f.write(passthrough_dtb)
+                payload_paths.append(dtb_path)
+                payload_names.append("dtb")
+                dom["dtb_path"] = dtb_path
+
+    payload_data = []
+    for p in payload_paths:
+        data = read_file(p)
+        payload_data.append(data)
 
     loader_size = int(args.loader_size, 16)
     loader_end = align(base + loader_size) + 0x20000 + 0x4000
@@ -396,9 +602,6 @@ def main():
         zip(payload_names, payload_addrs, payload_sizes)
     ):
         print(f"  {i}: {name} @ 0x{addr:x} ({size} bytes)", file=sys.stderr)
-
-    build_dir = args.gen_dir
-    os.makedirs(build_dir, exist_ok=True)
 
     payloads_s = os.path.join(build_dir, "payloads.S")
     render_payloads(
