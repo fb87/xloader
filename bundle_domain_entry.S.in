@@ -1,0 +1,13 @@
+	.quad 0x${KADDR}
+	.quad ${KSIZE}
+	.quad 0x${IADDR}
+	.quad ${ISIZE}
+	.quad 0
+	.quad 0
+	.quad ${MEM_KB}
+	.asciz "${CMDLINE}"
+	.fill ${CMDLINE_PAD},1,0
+	.long ${NPT}
+	.long ${PASSTHROUGH_OFF}
+	.long 0
+	.long 0

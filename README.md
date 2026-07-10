@@ -32,6 +32,36 @@ The default pinned inputs are release tarballs verified by SHA-256:
 
 Override the `XLOADER_*_URL` and matching `XLOADER_*_SHA256` cache variables to pin different release artifacts.
 
+## Domain Configuration
+
+`bundle.py` accepts a TOML domain configuration with `--config`. CMake generates a default two-domU config at `build/cmake/domains.toml`; pass `-DXLOADER_DOMAIN_CONFIG=/path/to/domains.toml` to use a custom one.
+
+```toml
+[[domains]]
+type = "domU"
+kernel = "/path/to/Image"
+initrd = "/path/to/initramfs.cpio"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = [
+  "/pl031@9010000",
+]
+
+[[domains]]
+type = "domU"
+kernel = "/path/to/Image"
+initrd = "/path/to/initramfs.cpio"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = []
+```
+
+`type` is either `domU` or `dom0`. At most one `dom0` is allowed. Passthrough is only supported for `domU`; a `dom0` entry with `passthrough` is rejected.
+
+Each passthrough item is a path to a node in the source QEMU DTB. The loader copies the node into the Xen domain node in the host DTB. For Xen to propagate the node into the guest device tree, the domain node must use Xen's DOMU passthrough bindings (e.g., `xen,reg`, `iommu`); this requires Xen-side support beyond the current scope.
+
+The smoke test includes a `/pl031@9010000` passthrough entry for the first domain to validate the data flow (visible in boot logs as `xloader: passthrough /pl031@9010000`).
+
 ## QEMU Dom0less Test
 
 Run the two-domain dom0less smoke test:
@@ -55,4 +85,4 @@ The test writes:
 - `build/cmake/logs/domains.log`: per-domain readiness and interactive-console markers
 - `build/cmake/logs/summary.log`: paths and QEMU exit status
 
-The BusyBox initramfs prints `XLOADER_DOMAIN_READY domu0`, `XLOADER_DOMAIN_READY domu1`, and matching `XLOADER_DOMAIN_INTERACTIVE` markers. The test fails if xloader does not jump to Xen, Xen logs are absent, or either Linux domain does not reach userspace.
+The BusyBox initramfs prints `XLOADER_DOMAIN_READY` and `XLOADER_DOMAIN_INTERACTIVE` markers. The test fails if xloader does not jump to Xen, Xen logs are absent, or either Linux domain does not reach userspace.

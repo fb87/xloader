@@ -8,6 +8,9 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 option(XLOADER_FETCH_EXTERNALS "Fetch and build Xen, Linux, and BusyBox inputs" OFF)
 
+# dtc/libfdt has no CMake build — use Populate
+cmake_policy(SET CMP0169 OLD)
+
 set(XLOADER_CROSS_PREFIX "aarch64-linux-gnu-" CACHE STRING "AArch64 cross toolchain prefix")
 set(XLOADER_BASE_ADDR "0x40000000" CACHE STRING "Bundle base load address")
 set(XLOADER_QEMU "qemu-system-aarch64" CACHE FILEPATH "QEMU system emulator")
@@ -23,6 +26,25 @@ set(XLOADER_BUSYBOX_URL "https://busybox.net/downloads/busybox-1.36.1.tar.bz2" C
 set(XLOADER_BUSYBOX_SHA256 "b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314" CACHE STRING "Pinned BusyBox release tarball SHA-256")
 set(XLOADER_MUSL_URL "https://musl.libc.org/releases/musl-1.2.5.tar.gz" CACHE STRING "Pinned musl release tarball URL")
 set(XLOADER_MUSL_SHA256 "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4" CACHE STRING "Pinned musl release tarball SHA-256")
+set(XLOADER_DTC_URL "https://www.kernel.org/pub/software/utils/dtc/dtc-1.7.1.tar.xz" CACHE STRING "Pinned dtc/libfdt release tarball URL")
+set(XLOADER_DTC_SHA256 "398098bac205022b39d3dce5982b98c57f1023f3721a53ebcbb782be4cf7885e" CACHE STRING "Pinned dtc/libfdt release tarball SHA-256")
+
+# Always fetch dtc for libfdt (mandatory build dependency)
+FetchContent_Declare(dtc
+  URL ${XLOADER_DTC_URL}
+  URL_HASH SHA256=${XLOADER_DTC_SHA256}
+)
+FetchContent_GetProperties(dtc)
+if(NOT dtc_POPULATED)
+  FetchContent_Populate(dtc)
+  # Patch libfdt_env.h to remove <stdlib.h> (not available in freestanding)
+  set(LIBFDT_ENV_PATH "${dtc_SOURCE_DIR}/libfdt/libfdt_env.h")
+  file(READ "${LIBFDT_ENV_PATH}" LIBFDT_ENV_CONTENT)
+  string(REPLACE "#include <stdlib.h>"
+                 "/* patched for freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
+  file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
+endif()
+set(XLOADER_LIBFDT_SRC_DIR "${dtc_SOURCE_DIR}/libfdt")
 
 if(XLOADER_FETCH_EXTERNALS)
   FetchContent_Declare(xen
@@ -107,6 +129,7 @@ set(XLOADER_DOMAIN1_KERNEL "${XLOADER_LINUX_IMAGE_DEFAULT}" CACHE FILEPATH "Doma
 set(XLOADER_DOMAIN0_INITRD "${XLOADER_INITRAMFS_DEFAULT}" CACHE FILEPATH "Domain 0 initramfs")
 set(XLOADER_DOMAIN1_INITRD "${XLOADER_INITRAMFS_DEFAULT}" CACHE FILEPATH "Domain 1 initramfs")
 set(XLOADER_DOMAIN_MEMORY_KB "131072" CACHE STRING "Memory per dom0less Linux domain in KiB")
+set(XLOADER_DOMAIN_CONFIG "" CACHE FILEPATH "TOML domain configuration passed to bundle.py")
 
 set(XLOADER_BUILD_DIR ${CMAKE_BINARY_DIR}/xloader)
 set(XLOADER_DTB ${CMAKE_BINARY_DIR}/qemu/virt.dtb)
@@ -115,14 +138,26 @@ set(XLOADER_BUNDLE ${CMAKE_BINARY_DIR}/bundle.elf)
 set(XLOADER_CFLAGS
   -ffreestanding -nostdlib -march=armv8-a
   -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
+  -I${XLOADER_LIBFDT_SRC_DIR}
   -Wall -Wextra -Werror
 )
+
+set(XLOADER_LIBFDT_SOURCES
+  fdt.c fdt_ro.c fdt_rw.c fdt_sw.c fdt_wip.c
+  fdt_strerror.c fdt_empty_tree.c fdt_addresses.c
+)
+
+set(XLOADER_LIBFDT_OBJECTS)
+foreach(libfdt_src ${XLOADER_LIBFDT_SOURCES})
+  get_filename_component(basename ${libfdt_src} NAME_WE)
+  list(APPEND XLOADER_LIBFDT_OBJECTS ${XLOADER_BUILD_DIR}/libfdt_${basename}.o)
+endforeach()
 
 set(XLOADER_OBJECTS
   ${XLOADER_BUILD_DIR}/start.o
   ${XLOADER_BUILD_DIR}/string.o
   ${XLOADER_BUILD_DIR}/main.o
-  ${XLOADER_BUILD_DIR}/dtb.o
+  ${XLOADER_LIBFDT_OBJECTS}
 )
 
 add_custom_command(
@@ -133,12 +168,23 @@ add_custom_command(
   VERBATIM
 )
 
-foreach(src string main dtb)
+foreach(src string main)
   add_custom_command(
     OUTPUT ${XLOADER_BUILD_DIR}/${src}.o
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
     COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${CMAKE_SOURCE_DIR}/src/${src}.c -o ${XLOADER_BUILD_DIR}/${src}.o
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/src/dtb.h ${CMAKE_SOURCE_DIR}/include/bundle.h
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/include/bundle.h
+    VERBATIM
+  )
+endforeach()
+
+foreach(libfdt_src ${XLOADER_LIBFDT_SOURCES})
+  get_filename_component(basename ${libfdt_src} NAME_WE)
+  add_custom_command(
+    OUTPUT ${XLOADER_BUILD_DIR}/libfdt_${basename}.o
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
+    COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${XLOADER_LIBFDT_SRC_DIR}/${libfdt_src} -o ${XLOADER_BUILD_DIR}/libfdt_${basename}.o
+    DEPENDS ${XLOADER_LIBFDT_SRC_DIR}/${libfdt_src}
     VERBATIM
   )
 endforeach()
@@ -155,28 +201,79 @@ add_custom_command(
   VERBATIM
 )
 
-set(XLOADER_DOMU0_CMDLINE "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init xloader.domain=domu0")
-set(XLOADER_DOMU1_CMDLINE "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init xloader.domain=domu1")
-set(XLOADER_DOMU0_CFG "kernel=${XLOADER_DOMAIN0_KERNEL}\;initrd=${XLOADER_DOMAIN0_INITRD}\;cmdline=${XLOADER_DOMU0_CMDLINE}\;memory=${XLOADER_DOMAIN_MEMORY_KB}")
-set(XLOADER_DOMU1_CFG "kernel=${XLOADER_DOMAIN1_KERNEL}\;initrd=${XLOADER_DOMAIN1_INITRD}\;cmdline=${XLOADER_DOMU1_CMDLINE}\;memory=${XLOADER_DOMAIN_MEMORY_KB}")
+set(XLOADER_DOMU0_CMDLINE "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init")
+set(XLOADER_DOMU1_CMDLINE "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init")
+set(XLOADER_GENERATED_DOMAIN_CONFIG ${CMAKE_BINARY_DIR}/domains.toml)
+if(NOT XLOADER_DOMAIN_CONFIG)
+  set(XLOADER_DOMAIN_CONFIG ${XLOADER_GENERATED_DOMAIN_CONFIG})
+endif()
+
+file(WRITE ${XLOADER_GENERATED_DOMAIN_CONFIG}
+"[[domains]]\n"
+"type = 'domU'\n"
+"kernel = '${XLOADER_DOMAIN0_KERNEL}'\n"
+"initrd = '${XLOADER_DOMAIN0_INITRD}'\n"
+"memory_kb = ${XLOADER_DOMAIN_MEMORY_KB}\n"
+"cmdline = '${XLOADER_DOMU0_CMDLINE}'\n"
+"passthrough = ['/pl031@9010000']\n"
+"\n"
+"[[domains]]\n"
+"type = 'domU'\n"
+"kernel = '${XLOADER_DOMAIN1_KERNEL}'\n"
+"initrd = '${XLOADER_DOMAIN1_INITRD}'\n"
+"memory_kb = ${XLOADER_DOMAIN_MEMORY_KB}\n"
+"cmdline = '${XLOADER_DOMU1_CMDLINE}'\n"
+"passthrough = []\n"
+)
+
+set(XLOADER_GENERATED_SOURCES
+  ${XLOADER_BUILD_DIR}/payloads.S
+  ${XLOADER_BUILD_DIR}/xloader.lds
+  ${XLOADER_BUILD_DIR}/bundle.json
+)
+
+add_custom_command(
+  OUTPUT ${XLOADER_GENERATED_SOURCES}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/bundle.py
+          --gen-dir=${XLOADER_BUILD_DIR}
+          --base=${XLOADER_BASE_ADDR}
+          --xen=${XLOADER_XEN_IMAGE}
+          --config=${XLOADER_DOMAIN_CONFIG}
+          --dtb=${XLOADER_DTB}
+          --ram-size=${XLOADER_QEMU_MEM}
+  DEPENDS ${XLOADER_DTB} ${XLOADER_XEN_IMAGE}
+          ${XLOADER_DOMAIN0_KERNEL} ${XLOADER_DOMAIN1_KERNEL}
+          ${XLOADER_DOMAIN0_INITRD} ${XLOADER_DOMAIN1_INITRD}
+          ${XLOADER_DOMAIN_CONFIG}
+          ${CMAKE_SOURCE_DIR}/bundle.py
+          ${CMAKE_SOURCE_DIR}/bundle_payloads.S.in
+          ${CMAKE_SOURCE_DIR}/bundle_xloader.lds.in
+          ${CMAKE_SOURCE_DIR}/bundle_domain_entry.S.in
+  COMMENT "Generating bundle sources (payloads.S, xloader.lds)"
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT ${XLOADER_BUILD_DIR}/payloads.o
+  COMMAND ${XLOADER_CROSS_PREFIX}gcc -x assembler -c
+          ${XLOADER_BUILD_DIR}/payloads.S
+          -o ${XLOADER_BUILD_DIR}/payloads.o
+  DEPENDS ${XLOADER_BUILD_DIR}/payloads.S
+  COMMENT "Assembling bundle payloads"
+  VERBATIM
+)
 
 add_custom_command(
   OUTPUT ${XLOADER_BUNDLE}
-  COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/bundle.py
-          --base=${XLOADER_BASE_ADDR}
-          --xen=${XLOADER_XEN_IMAGE}
-          --domU=${XLOADER_DOMU0_CFG}
-          --domU=${XLOADER_DOMU1_CFG}
-          --dtb=${XLOADER_DTB}
-          --ram-size=${XLOADER_QEMU_MEM}
-          --cross-prefix=${XLOADER_CROSS_PREFIX}
+  COMMAND ${XLOADER_CROSS_PREFIX}ld
+          -T ${XLOADER_BUILD_DIR}/xloader.lds
           -o ${XLOADER_BUNDLE}
+          -Map ${XLOADER_BUILD_DIR}/xloader.map
           ${XLOADER_OBJECTS}
-  DEPENDS ${XLOADER_OBJECTS} ${XLOADER_DTB} ${XLOADER_XEN_IMAGE}
-          ${XLOADER_DOMAIN0_KERNEL} ${XLOADER_DOMAIN1_KERNEL}
-          ${XLOADER_DOMAIN0_INITRD} ${XLOADER_DOMAIN1_INITRD}
-          ${CMAKE_SOURCE_DIR}/bundle.py
-  COMMENT "Bundling Xen and two dom0less Linux domains"
+          ${XLOADER_BUILD_DIR}/payloads.o
+  DEPENDS ${XLOADER_OBJECTS} ${XLOADER_BUILD_DIR}/payloads.o ${XLOADER_BUILD_DIR}/xloader.lds
+  COMMENT "Linking Xen bundle"
   VERBATIM
 )
 

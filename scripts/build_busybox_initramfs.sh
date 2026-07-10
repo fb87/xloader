@@ -31,29 +31,14 @@ mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
-domain="unknown"
-for arg in $(cat /proc/cmdline 2>/dev/null); do
-  case "$arg" in
-    xloader.domain=*) domain="${arg#xloader.domain=}" ;;
-  esac
-done
-
-if [ "${domain}" = unknown ]; then
-  for path in $(find /proc/device-tree -name bootargs 2>/dev/null); do
-    for arg in $(tr '\000' ' ' <"${path}" 2>/dev/null); do
-      case "$arg" in
-        xloader.domain=*) domain="${arg#xloader.domain=}" ;;
-      esac
-    done
-  done
-fi
-
 console=/dev/ttyAMA0
 [ -e "${console}" ] || console=/dev/hvc0
 console_name="${console#/dev/}"
 
-echo "XLOADER_DOMAIN_READY ${domain}" >"${console}" 2>/dev/null || true
-echo "XLOADER_DOMAIN_INTERACTIVE ${domain} console=${console_name}" >"${console}" 2>/dev/null || true
+echo "XLOADER_DOMAIN_READY" >"${console}" 2>/dev/null || true
+find /proc/device-tree -name 'pl031@9010000' -maxdepth 5 2>/dev/null \
+  | head -1 | xargs -r echo "XLOADER_PASSTHROUGH_DEV=" >"${console}" 2>/dev/null
+echo "XLOADER_DOMAIN_INTERACTIVE console=${console_name}" >"${console}" 2>/dev/null || true
 (setsid sh -c 'exec sh </dev/ttyAMA0 >/dev/ttyAMA0 2>&1' 2>/dev/null || \
   setsid sh -c 'exec sh </dev/hvc0 >/dev/hvc0 2>&1') &
 

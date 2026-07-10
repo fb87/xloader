@@ -3,12 +3,12 @@
 
 #include <stdint.h>
 
-#define XEN_BUNDLE_MAGIC      0x58454E42554E444CULL
-#define XEN_BUNDLE_VERSION    2
+#define XEN_BUNDLE_MAGIC 0x58454E42554E444CULL
+#define XEN_BUNDLE_VERSION 2
 #define XEN_BUNDLE_MAX_DOMAINS 16
 #define XEN_BUNDLE_MAX_PASSTHROUGH 32
 #define XEN_BUNDLE_CMDLINE_LEN 256
-#define XEN_BUNDLE_MAX_PATHS  64
+#define XEN_BUNDLE_MAX_PATHS 64
 
 struct xen_domain_desc {
     uint64_t kernel_addr;
@@ -18,7 +18,7 @@ struct xen_domain_desc {
     uint64_t dtb_addr;
     uint64_t dtb_size;
     uint64_t memory_kb;
-    char     cmdline[XEN_BUNDLE_CMDLINE_LEN];
+    char cmdline[XEN_BUNDLE_CMDLINE_LEN];
     uint32_t num_passthrough;
     uint32_t passthrough_off;
     uint32_t num_passthrough_strings;

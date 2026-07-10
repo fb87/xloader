@@ -1,0 +1,39 @@
+OUTPUT_FORMAT(elf64-littleaarch64)
+OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+
+PHDRS
+{
+  text PT_LOAD;
+  rodata PT_LOAD;
+  data PT_LOAD;
+  bss PT_LOAD;
+  xen PT_LOAD;
+${DOMAIN_PHDRS}
+}
+
+SECTIONS
+{
+  . = 0x${BASE_ADDR};
+
+  .text : { *(.text.entry) *(.text*) } :text
+  .rodata : { *(.rodata*) } :rodata
+${DTB_PHDR_LINE}
+  .data : { *(.data*) } :data
+  .bss : ALIGN(16) {
+    _bss_start = .;
+    *(.bss*); *(COMMON);
+    . = ALIGN(16);
+    _bss_end = .;
+    . = ALIGN(4096);
+    _dtb_buffer = .;
+    . = . + 0x20000;
+  } :bss
+  _stack_start = .;
+  . = . + 0x4000;
+  _stack_end = .;
+
+  .payload_xen 0x${XEN_ADDR} : { *(.payload_xen) } :xen
+
+${DOMAIN_SECTIONS}
+}

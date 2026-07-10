@@ -41,11 +41,11 @@ grep 'XLOADER_DOMAIN_' "${combined}" > "${domain_log}" || true
 
 grep -q 'xloader: jumping to Xen' "${combined}"
 grep -q '^(XEN)' "${combined}"
-grep -q 'CMDLINE\[.*domain@0 .*xloader.domain=domu0' "${combined}"
-grep -q 'CMDLINE\[.*domain@1 .*xloader.domain=domu1' "${combined}"
-grep -q 'XLOADER_DOMAIN_READY unknown' "${combined}"
-grep -q 'DOM2: XLOADER_DOMAIN_READY unknown' "${combined}"
+grep -q 'CMDLINE\[.*domain@0 .*console=ttyAMA0' "${combined}"
+grep -q 'CMDLINE\[.*domain@1 .*console=ttyAMA0' "${combined}"
+grep -q 'XLOADER_DOMAIN_READY' "${combined}"
+grep -q 'DOM2: XLOADER_DOMAIN_READY' "${combined}"
 grep -q '~ #' "${combined}"
-grep -q 'DOM2: XLOADER_DOMAIN_INTERACTIVE unknown console=ttyAMA0' "${combined}"
+grep -q 'DOM2: XLOADER_DOMAIN_INTERACTIVE console=ttyAMA0' "${combined}"
 
 printf 'dom0less smoke test passed; logs in %s\n' "${LOG_DIR}"

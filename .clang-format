@@ -1,0 +1,13 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Linux
+ColumnLimit: 100
+TabWidth: 4
+UseTab: Never
+PointerAlignment: Left
+SpaceAfterCStyleCast: true
+InsertBraces: true
+SortIncludes: false

@@ -1,0 +1,24 @@
+.section .rodata.bundle_desc, "a"
+.balign 8
+.globl _bundle_desc
+_bundle_desc:
+	.quad 0x${MAGIC}ULL
+	.quad ${VERSION}
+	.quad 0x${BASE_ADDR}
+	.quad 0x${XEN_ADDR}
+	.quad ${XEN_SIZE}
+	.quad 0x${XEN_ENTRY}
+	.quad ${NUM_DOMAINS}
+	.quad ${DOM0_IDX}
+${DTB_PTR_LINE}
+${DTB_SIZE_LINE}
+	.quad 0x${RAM_SIZE}
+
+${DOMAIN_ENTRIES}
+
+${PASSTHROUGH_BLOCK}
+${DTB_BLOCK}
+
+${PAYLOAD_XEN}
+${PAYLOAD_KERNELS}
+${PAYLOAD_INITRDS}
