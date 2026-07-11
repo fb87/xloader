@@ -33,7 +33,7 @@ set(XLOADER_BIN ${CMAKE_BINARY_DIR}/xloader.bin)
 
 set(XLOADER_CFLAGS
   -ffreestanding -nostdlib -march=armv8-a
-  -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
+  -I${CMAKE_SOURCE_DIR}/src
   -I${XLOADER_LIBFDT_SRC_DIR}
   -Wall -Wextra -Werror
   -Wshadow -Wundef -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition
@@ -41,7 +41,7 @@ set(XLOADER_CFLAGS
 
 set(LIBFDT_CFLAGS
   -ffreestanding -march=armv8-a
-  -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
+  -I${CMAKE_SOURCE_DIR}/src
   -I${XLOADER_LIBFDT_SRC_DIR}
   -include ${CMAKE_BINARY_DIR}/compiler.h
   -Wall -Wextra -Werror -Wno-error=redundant-decls
@@ -77,7 +77,7 @@ foreach(src string main)
     OUTPUT ${XLOADER_BUILD_DIR}/${src}.o
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
     COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${CMAKE_SOURCE_DIR}/src/${src}.c -o ${XLOADER_BUILD_DIR}/${src}.o
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/include/bundle.h ${XLOADER_LIBFDT_SRC_DIR}/libfdt.h
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/${src}.c ${CMAKE_SOURCE_DIR}/src/string.h ${CMAKE_SOURCE_DIR}/src/bundle.h ${XLOADER_LIBFDT_SRC_DIR}/libfdt.h
     VERBATIM
   )
 endforeach()

@@ -1,4 +1,4 @@
-#include "../include/bundle.h"
+#include "bundle.h"
 #include "string.h"
 #include <libfdt.h>
 #include <stdarg.h>
