@@ -114,16 +114,16 @@ add_custom_target(xloader DEPENDS ${XLOADER_BIN})
 # ------------------------------------------------------------------
 # RELEASE — package for distribution
 # ------------------------------------------------------------------
-set(XLOADER_RELEASE_DIR ${CMAKE_BINARY_DIR}/release)
 set(XLOADER_RELEASE_ARCHIVE ${CMAKE_BINARY_DIR}/xloader-bundle.tar.gz)
 
 add_custom_target(release
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_RELEASE_DIR}
-  COMMAND ${CMAKE_COMMAND} -E copy ${XLOADER_ELF} ${XLOADER_RELEASE_DIR}/
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/bundle.py ${XLOADER_RELEASE_DIR}/
-  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/README.md ${XLOADER_RELEASE_DIR}/
-  COMMAND ${CMAKE_COMMAND} -E tar "cfz" ${XLOADER_RELEASE_ARCHIVE} -C ${XLOADER_RELEASE_DIR} .
+  COMMAND ${CMAKE_COMMAND} -E copy ${XLOADER_ELF} ${CMAKE_BINARY_DIR}/
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/bundle.py ${CMAKE_BINARY_DIR}/
+  COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/README.md ${CMAKE_BINARY_DIR}/
+  COMMAND ${CMAKE_COMMAND} -E tar "cfz" ${XLOADER_RELEASE_ARCHIVE} -- xloader.elf bundle.py README.md
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMAND ${CMAKE_COMMAND} -E echo "release → ${XLOADER_RELEASE_ARCHIVE}"
+  COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/xloader.elf ${CMAKE_BINARY_DIR}/bundle.py ${CMAKE_BINARY_DIR}/README.md
   DEPENDS xloader
   VERBATIM
 )
