@@ -254,8 +254,8 @@ void main(uint64_t dtb_ptr) {
                     goto fail;
 
                 void* pt_buf = (void*)_dtb_buffer + PT_BUF_OFFSET;
-                int ret = fdt_create_empty_tree(pt_buf, 0x10000);
-                if (ret < 0) { printf("(LDR) pt create fail\n"); goto fail; }
+                int pt_ret = fdt_create_empty_tree(pt_buf, 0x10000);
+                if (pt_ret < 0) { printf("(LDR) pt create fail\n"); goto fail; }
 
                 int pt_cont = fdt_add_subnode(pt_buf, 0, "passthrough");
                 if (pt_cont < 0) { printf("(LDR) pt container fail\n"); goto fail; }

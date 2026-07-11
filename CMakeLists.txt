@@ -36,6 +36,7 @@ set(XLOADER_CFLAGS
   -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
   -I${XLOADER_LIBFDT_SRC_DIR}
   -Wall -Wextra -Werror
+  -Wshadow -Wundef -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition
 )
 
 set(LIBFDT_CFLAGS
@@ -43,7 +44,8 @@ set(LIBFDT_CFLAGS
   -I${CMAKE_SOURCE_DIR}/src -I${CMAKE_SOURCE_DIR}/include
   -I${XLOADER_LIBFDT_SRC_DIR}
   -include ${CMAKE_BINARY_DIR}/compiler.h
-  -Wall -Wextra -Werror
+  -Wall -Wextra -Werror -Wno-error=redundant-decls
+  -Wshadow -Wundef -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition
 )
 
 set(XLOADER_LIBFDT_SOURCES fdt.c fdt_ro.c fdt_rw.c fdt_sw.c fdt_wip.c
