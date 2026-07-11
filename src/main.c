@@ -74,8 +74,10 @@ static void printf(const char* fmt, ...) {
     va_end(ap);
 }
 
+#define DTB_BUF_SIZE 0x200000
+
 extern char _dtb_buffer[];
-extern char _bundle_desc[];
+extern char _xloader_end[];
 
 static void jump_to_xen(uint64_t entry, uint64_t dtb) {
     asm volatile(
@@ -112,13 +114,14 @@ static int add_module_node(void* fdt, int parent, const char* name,
 }
 
 void main(uint64_t dtb_ptr) {
-    struct xen_bundle_desc* desc = (struct xen_bundle_desc*)&_bundle_desc;
+    uint64_t desc_off = ((uint64_t)&_xloader_end + 63) & ~63ULL;
+    struct xen_bundle_desc* desc = (struct xen_bundle_desc*)desc_off;
     void* host_fdt = (void*)dtb_ptr;
 
-    printf("xloader: bundle main\n");
+    printf("(LDR) bundle main\n");
 
     if (desc->magic != XEN_BUNDLE_MAGIC || desc->version != XEN_BUNDLE_VERSION) {
-        printf("xloader: bad magic\n");
+        printf("(LDR) bad magic\n");
         goto fail;
     }
 
@@ -126,42 +129,42 @@ void main(uint64_t dtb_ptr) {
         host_fdt = (void*)(uintptr_t)desc->dtb_ptr;
 
     if (fdt_check_header(host_fdt) != 0) {
-        printf("xloader: bad dtb\n");
+        printf("(LDR) bad dtb\n");
         goto fail;
     }
 
     uint32_t totsize = fdt_totalsize(host_fdt);
-    printf("xloader: dtb size=0x%x\n", totsize);
+    printf("(LDR) dtb size=0x%x\n", totsize);
 
     void* patched_fdt = &_dtb_buffer;
-    int ret = fdt_open_into(host_fdt, patched_fdt, 0x20000);
+    int ret = fdt_open_into(host_fdt, patched_fdt, DTB_BUF_SIZE);
     if (ret < 0) {
-        printf("xloader: fdt_open_into failed\n");
+        printf("(LDR) fdt_open_into failed\n");
         goto fail;
     }
 
     int chosen_off = fdt_path_offset(patched_fdt, "/chosen");
     if (chosen_off < 0) {
         chosen_off = fdt_add_subnode(patched_fdt, 0, "chosen");
-        printf("xloader: created chosen\n");
+        printf("(LDR) created chosen\n");
     }
-    printf("xloader: chosen_off=0x%x\n", chosen_off);
+    printf("(LDR) chosen_off=0x%x\n", chosen_off);
 
     static const char xen_cmdline[] = "sync_console loglvl=all guest_loglvl=all dom0_mem=256M";
     fdt_setprop_string(patched_fdt, chosen_off, "xen,xen-bootargs", xen_cmdline);
 
     {
         int dom0_idx = (int)desc->dom0_idx;
-        printf("xloader: num_domains=%d dom0_idx=0x%x\n", (int)desc->num_domains, dom0_idx);
+        printf("(LDR) num_domains=%d dom0_idx=0x%x\n", (int)desc->num_domains, dom0_idx);
 
         if (dom0_idx >= 0 && dom0_idx < (int)desc->num_domains) {
             struct xen_domain_desc* d = &desc->domains[dom0_idx];
             if (d->num_passthrough || d->passthrough_off) {
-                printf("xloader: dom0 passthrough unsupported\n");
+                printf("(LDR) dom0 passthrough unsupported\n");
                 goto fail;
             }
             if (d->kernel_addr && d->kernel_size) {
-                printf("xloader: add dom0 kernel\n");
+                printf("(LDR) add dom0 kernel\n");
                 static const char compat_kernel[] = "xen,multiboot-module";
                 add_module_node(patched_fdt, chosen_off, "module@0",
                                 d->kernel_addr, d->kernel_size,
@@ -169,7 +172,7 @@ void main(uint64_t dtb_ptr) {
                                 d->cmdline[0] ? d->cmdline : 0);
             }
             if (d->initrd_addr && d->initrd_size) {
-                printf("xloader: add dom0 initrd\n");
+                printf("(LDR) add dom0 initrd\n");
                 static const char compat_initrd[] = "xen,multiboot-module";
                 add_module_node(patched_fdt, chosen_off, "module@1",
                                 d->initrd_addr, d->initrd_size,
@@ -181,9 +184,9 @@ void main(uint64_t dtb_ptr) {
             if (i == dom0_idx) continue;
             struct xen_domain_desc* d = &desc->domains[i];
             if (!d->kernel_addr && !d->kernel_size) continue;
-            printf("xloader: add domain@%d\n", i);
+            printf("(LDR) add domain@%d\n", i);
             uint64_t mem_kb = d->memory_kb ? d->memory_kb : 131072;
-            printf("xloader: domain memory=0x%lx\n", mem_kb);
+            printf("(LDR) domain memory=0x%lx\n", mem_kb);
 
             char name[32];
             fmt_node_name(name, sizeof(name), "domain", i);
@@ -210,7 +213,7 @@ void main(uint64_t dtb_ptr) {
             if (d->kernel_addr && d->kernel_size) {
                 char mname[32];
                 fmt_node_name(mname, sizeof(mname), "module", mi++);
-                static const char compat_kernel[] = "multiboot,module\0multiboot,kernel";
+                static const char compat_kernel[] = "multiboot,kernel\0multiboot,module";
                 add_module_node(patched_fdt, dom_node, mname,
                                 d->kernel_addr, d->kernel_size,
                                 compat_kernel, sizeof(compat_kernel),
@@ -219,7 +222,7 @@ void main(uint64_t dtb_ptr) {
             if (d->initrd_addr && d->initrd_size) {
                 char mname[32];
                 fmt_node_name(mname, sizeof(mname), "module", mi++);
-                static const char compat_ramdisk[] = "multiboot,module\0multiboot,ramdisk";
+                static const char compat_ramdisk[] = "multiboot,ramdisk\0multiboot,module";
                 add_module_node(patched_fdt, dom_node, mname,
                                 d->initrd_addr, d->initrd_size,
                                 compat_ramdisk, sizeof(compat_ramdisk), 0);
@@ -227,11 +230,11 @@ void main(uint64_t dtb_ptr) {
             if (d->dtb_addr && d->dtb_size) {
                 char mname[32];
                 fmt_node_name(mname, sizeof(mname), "module", mi++);
-                static const char compat_dtb[] = "multiboot,module\0multiboot,device-tree";
+                static const char compat_dtb[] = "multiboot,device-tree\0multiboot,module";
                 add_module_node(patched_fdt, dom_node, mname,
                                 d->dtb_addr, d->dtb_size,
                                 compat_dtb, sizeof(compat_dtb), 0);
-                printf("xloader: passthrough dtb @ 0x%lx\n", d->dtb_addr);
+                printf("(LDR) passthrough dtb @ 0x%lx\n", d->dtb_addr);
             }
         }
     }
@@ -239,14 +242,16 @@ void main(uint64_t dtb_ptr) {
     fdt_pack(patched_fdt);
     uint32_t final_size = fdt_totalsize(patched_fdt);
     uint64_t dtb_final = (uint64_t)&_dtb_buffer;
-    printf("xloader: dtb_final=0x%lx size=0x%x xen_entry=0x%lx\n",
+    printf("(LDR) dtb_final=0x%lx size=0x%x xen_entry=0x%lx\n",
            dtb_final, final_size, desc->xen_entry);
 
-    printf("xloader: jumping to Xen\n");
+    printf("(LDR) jumping to Xen\n");
+    // Debug: verify Xen entry code
+    uint32_t* xen_code = (uint32_t*)desc->xen_entry;
     jump_to_xen(desc->xen_entry, dtb_final);
 
 fail:
-    printf("xloader: FAIL\n");
+    printf("(LDR) FAIL\n");
     for (;;)
         asm volatile("wfi");
 }

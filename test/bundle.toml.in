@@ -1,0 +1,21 @@
+[xloader]
+elf = "@XLOADER_ELF@"
+
+[xen]
+path = "@XEN_IMAGE@"
+
+[[domains]]
+type = "domU"
+kernel = "@LINUX_IMAGE@"
+initrd = "@INITRAMFS@"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = ['/pl031@9010000']
+
+[[domains]]
+type = "domU"
+kernel = "@LINUX_IMAGE@"
+initrd = "@INITRAMFS@"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = []

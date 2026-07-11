@@ -39,7 +39,7 @@ grep 'XLOADER_DOMAIN_' "${combined}" > "${domain_log}" || true
   printf 'domain_log=%s\n' "${domain_log}"
 } > "${summary}"
 
-grep -q 'xloader: jumping to Xen' "${combined}"
+grep -q '(LDR) jumping to Xen' "${combined}"
 grep -q '^(XEN)' "${combined}"
 grep -q 'CMDLINE\[.*domain@0 .*console=ttyAMA0' "${combined}"
 grep -q 'CMDLINE\[.*domain@1 .*console=ttyAMA0' "${combined}"
