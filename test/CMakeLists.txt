@@ -73,22 +73,33 @@ if(XLOADER_FETCH_EXTERNALS)
   set(BUNDLE_TOML "${CMAKE_BINARY_DIR}/bundle.toml")
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/bundle.toml.in ${BUNDLE_TOML})
 
-  add_custom_command(OUTPUT ${BUNDLE_BIN}
+  set(BUNDLE_ELF "${CMAKE_BINARY_DIR}/bundle.elf")
+  add_custom_command(OUTPUT ${BUNDLE_ELF}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../bundle.py
-      --config ${BUNDLE_TOML} -o ${BUNDLE_BIN}
+      --config ${BUNDLE_TOML} -o ${BUNDLE_ELF}
     DEPENDS ${XEN_IMAGE} ${LINUX_IMAGE} ${INITRAMFS} ${XLOADER_ELF} ${BUNDLE_TOML}
     COMMENT "Generating bundle.elf")
-  add_custom_target(bundle DEPENDS ${BUNDLE_BIN})
+  add_custom_target(bundle DEPENDS ${BUNDLE_ELF})
   add_dependencies(bundle xen-arm64 linux-arm64 busybox-initramfs)
 
-  # QEMU test
+  # QEMU smoke test
   add_custom_target(run-qemu-test
     COMMAND ${CMAKE_COMMAND} -E env
-      QEMU=${XLOADER_QEMU} BUNDLE=${BUNDLE_BIN} LOG_DIR=${CMAKE_BINARY_DIR}/logs
+      QEMU=${XLOADER_QEMU} BUNDLE=${BUNDLE_ELF} LOG_DIR=${CMAKE_BINARY_DIR}/logs
       QEMU_MEM=${XLOADER_QEMU_MEM} QEMU_CPU=${XLOADER_QEMU_CPU}
       QEMU_TIMEOUT=${XLOADER_QEMU_TIMEOUT}
       ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run_qemu_dom0less.sh
     DEPENDS bundle USES_TERMINAL
     COMMENT "Running QEMU dom0less smoke test"
+    VERBATIM)
+
+  # Interactive QEMU session
+  add_custom_target(run-qemu-test-interactive
+    COMMAND ${CMAKE_COMMAND} -E env
+      QEMU=${XLOADER_QEMU} BUNDLE=${BUNDLE_ELF} LOG_DIR=${CMAKE_BINARY_DIR}/logs
+      QEMU_MEM=${XLOADER_QEMU_MEM} QEMU_CPU=${XLOADER_QEMU_CPU}
+      ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run_qemu_dom0less_interactive.sh
+    DEPENDS bundle USES_TERMINAL
+    COMMENT "Running QEMU dom0less interactive session"
     VERBATIM)
 endif()

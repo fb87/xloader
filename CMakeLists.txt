@@ -2,14 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 project(xloader NONE)
 
 include(FetchContent)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 cmake_policy(SET CMP0169 OLD)
 
 set(XLOADER_CROSS_PREFIX "aarch64-linux-gnu-" CACHE STRING "AArch64 cross toolchain prefix")
-set(XLOADER_QEMU "qemu-system-aarch64" CACHE FILEPATH "QEMU system emulator")
-set(XLOADER_QEMU_MEM "1G" CACHE STRING "QEMU RAM size")
-set(XLOADER_QEMU_CPU "cortex-a57" CACHE STRING "QEMU CPU model")
-set(XLOADER_QEMU_TIMEOUT "120" CACHE STRING "QEMU test timeout in seconds")
 
 # dtc/libfdt (mandatory for xloader build)
 set(XLOADER_DTC_URL "https://www.kernel.org/pub/software/utils/dtc/dtc-1.7.1.tar.xz" CACHE STRING "Pinned dtc/libfdt release tarball URL")
@@ -132,37 +127,5 @@ add_custom_target(release
   COMMAND ${CMAKE_COMMAND} -E tar "cfz" ${XLOADER_RELEASE_ARCHIVE} -C ${XLOADER_RELEASE_DIR} .
   COMMAND ${CMAKE_COMMAND} -E echo "release → ${XLOADER_RELEASE_ARCHIVE}"
   DEPENDS xloader
-  VERBATIM
-)
-
-# ------------------------------------------------------------------
-# QEMU test targets (expect bundle.elf to exist externally)
-# ------------------------------------------------------------------
-set(XLOADER_BUNDLE ${CMAKE_BINARY_DIR}/bundle.elf CACHE FILEPATH "Bundle ELF for QEMU")
-
-add_custom_target(run-qemu-dom0less
-  COMMAND ${CMAKE_COMMAND} -E env
-          QEMU=${XLOADER_QEMU}
-          BUNDLE=${XLOADER_BUNDLE}
-          LOG_DIR=${CMAKE_BINARY_DIR}/logs
-          QEMU_MEM=${XLOADER_QEMU_MEM}
-          QEMU_CPU=${XLOADER_QEMU_CPU}
-          QEMU_TIMEOUT=${XLOADER_QEMU_TIMEOUT}
-          ${CMAKE_SOURCE_DIR}/scripts/run_qemu_dom0less.sh
-  USES_TERMINAL
-  COMMENT "Running QEMU arm64 dom0less smoke test"
-  VERBATIM
-)
-
-add_custom_target(run-qemu-dom0less-interactive
-  COMMAND ${CMAKE_COMMAND} -E env
-          QEMU=${XLOADER_QEMU}
-          BUNDLE=${XLOADER_BUNDLE}
-          LOG_DIR=${CMAKE_BINARY_DIR}/logs
-          QEMU_MEM=${XLOADER_QEMU_MEM}
-          QEMU_CPU=${XLOADER_QEMU_CPU}
-          ${CMAKE_SOURCE_DIR}/scripts/run_qemu_dom0less_interactive.sh
-  USES_TERMINAL
-  COMMENT "Running QEMU arm64 dom0less interactive session"
   VERBATIM
 )
