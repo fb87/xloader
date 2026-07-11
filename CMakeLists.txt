@@ -1,15 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
-
 project(xloader NONE)
 
 include(FetchContent)
-
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
 cmake_policy(SET CMP0169 OLD)
 
 set(XLOADER_CROSS_PREFIX "aarch64-linux-gnu-" CACHE STRING "AArch64 cross toolchain prefix")
-set(XLOADER_BASE_ADDR "0x40000000" CACHE STRING "Bundle base load address")
 set(XLOADER_QEMU "qemu-system-aarch64" CACHE FILEPATH "QEMU system emulator")
 set(XLOADER_QEMU_MEM "1G" CACHE STRING "QEMU RAM size")
 set(XLOADER_QEMU_CPU "cortex-a57" CACHE STRING "QEMU CPU model")
@@ -20,23 +16,18 @@ set(XLOADER_DTC_URL "https://www.kernel.org/pub/software/utils/dtc/dtc-1.7.1.tar
 set(XLOADER_DTC_SHA256 "398098bac205022b39d3dce5982b98c57f1023f3721a53ebcbb782be4cf7885e" CACHE STRING "Pinned dtc/libfdt release tarball SHA-256")
 
 FetchContent_Declare(dtc
-  URL ${XLOADER_DTC_URL}
-  URL_HASH SHA256=${XLOADER_DTC_SHA256}
-)
+  URL ${XLOADER_DTC_URL} URL_HASH SHA256=${XLOADER_DTC_SHA256})
 FetchContent_GetProperties(dtc)
 if(NOT dtc_POPULATED)
   FetchContent_Populate(dtc)
+  # Patch libfdt_env.h for -nostdlib builds (one-time)
+  file(READ "${dtc_SOURCE_DIR}/libfdt/libfdt_env.h" _env)
+  string(REPLACE "#include <stdlib.h>" "/* freestanding */" _env "${_env}")
+  file(WRITE "${dtc_SOURCE_DIR}/libfdt/libfdt_env.h" "${_env}")
 endif()
 set(XLOADER_LIBFDT_SRC_DIR "${dtc_SOURCE_DIR}/libfdt")
-
-# Patch libfdt_env.h for -nostdlib builds (only if not yet patched)
-set(LIBFDT_ENV_PATH "${XLOADER_LIBFDT_SRC_DIR}/libfdt_env.h")
-file(READ "${LIBFDT_ENV_PATH}" LIBFDT_ENV_CONTENT)
-if("#include <stdlib.h>" IN_LIST LIBFDT_ENV_CONTENT)
-  string(REPLACE "#include <stdlib.h>" "/* freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
-  file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
-endif()
-file(WRITE ${CMAKE_BINARY_DIR}/compiler.h "#include <stddef.h>\nchar *strrchr(const char *s, int c);\nvoid abort(void);\n")
+file(WRITE ${CMAKE_BINARY_DIR}/compiler.h
+     "#include <stddef.h>\nchar *strrchr(const char *s, int c);\nvoid abort(void);\n")
 
 # ------------------------------------------------------------------
 # XLOADER — the loader stub binary
@@ -145,9 +136,9 @@ add_custom_target(release
 )
 
 # ------------------------------------------------------------------
-# QEMU test targets (expect bundle.bin to exist externally)
+# QEMU test targets (expect bundle.elf to exist externally)
 # ------------------------------------------------------------------
-set(XLOADER_BUNDLE ${CMAKE_BINARY_DIR}/bundle.bin CACHE FILEPATH "Bundle binary for QEMU")
+set(XLOADER_BUNDLE ${CMAKE_BINARY_DIR}/bundle.elf CACHE FILEPATH "Bundle ELF for QEMU")
 
 add_custom_target(run-qemu-dom0less
   COMMAND ${CMAKE_COMMAND} -E env
