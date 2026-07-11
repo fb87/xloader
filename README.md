@@ -1,88 +1,199 @@
 # xloader
 
-`xloader` bundles Xen and dom0less ARM64 Linux domains into one ELF image, patches the QEMU virt DTB at boot, and jumps to Xen.
+`xloader` is a minimal ARM64 boot stub that patches the QEMU virt DTB at
+runtime (adds Xen bootargs, domU domain nodes, and passthrough device nodes)
+then jumps to Xen in dom0less mode.
 
-## Reproducible CMake Build
-
-Configure without fetching external projects when Xen, Linux, and initramfs artifacts already exist:
-
-```bash
-cmake -S . -B build/cmake \
-  -DXLOADER_XEN_IMAGE=/path/to/xen \
-  -DXLOADER_DOMAIN0_KERNEL=/path/to/Image \
-  -DXLOADER_DOMAIN1_KERNEL=/path/to/Image \
-  -DXLOADER_DOMAIN0_INITRD=/path/to/initramfs.cpio \
-  -DXLOADER_DOMAIN1_INITRD=/path/to/initramfs.cpio
-cmake --build build/cmake --target bundle
-```
-
-Configure with pinned source fetches for Xen, Linux, and BusyBox:
+## Quick Start
 
 ```bash
-cmake -S . -B build/cmake -DXLOADER_FETCH_EXTERNALS=ON
-cmake --build build/cmake --target bundle
-```
+# 1. Build the loader stub
+cmake -S . -B build
+cmake --build build --target xloader
+# → build/xloader.elf, build/xloader.bin
 
-The default pinned inputs are release tarballs verified by SHA-256:
+# 2. Create a bundle.toml with your artifacts
+cat > bundle.toml << 'EOF'
+[xloader]
+elf = "build/xloader.elf"
 
-- Xen: `https://downloads.xenproject.org/release/xen/4.21.1/xen-4.21.1.tar.gz`
-- Linux: `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.36.tar.xz`
-- BusyBox: `https://busybox.net/downloads/busybox-1.36.1.tar.bz2`
-- musl: `https://musl.libc.org/releases/musl-1.2.5.tar.gz`
+[xen]
+path = "path/to/xen"
 
-Override the `XLOADER_*_URL` and matching `XLOADER_*_SHA256` cache variables to pin different release artifacts.
-
-## Domain Configuration
-
-`bundle.py` accepts a TOML domain configuration with `--config`. CMake generates a default two-domU config at `build/cmake/domains.toml`; pass `-DXLOADER_DOMAIN_CONFIG=/path/to/domains.toml` to use a custom one.
-
-```toml
 [[domains]]
 type = "domU"
-kernel = "/path/to/Image"
-initrd = "/path/to/initramfs.cpio"
+kernel = "path/to/Image"
+initrd = "path/to/initramfs.cpio"
 memory_kb = 131072
 cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
-passthrough = [
-  "/pl031@9010000",
-]
+passthrough = []
 
 [[domains]]
 type = "domU"
-kernel = "/path/to/Image"
-initrd = "/path/to/initramfs.cpio"
+kernel = "path/to/Image"
+initrd = "path/to/initramfs.cpio"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = []
+EOF
+
+# 3. Generate bundle.elf (standalone, no cmake needed)
+bundle.py --config bundle.toml -o bundle.elf
+
+# 4. Run
+qemu-system-aarch64 -M virt,virtualization=on,secure=off,gic-version=3 \
+  -cpu cortex-a57 -m 1G -kernel bundle.elf \
+  -nographic -no-reboot -serial mon:stdio
+```
+
+Controls: type `Ctrl-a` three times to switch between Xen and domain consoles.
+`Ctrl-a x` to exit.
+
+## Architecture
+
+```
+xloader/                  # Core project
+├── CMakeLists.txt         # Builds xloader.elf + release tarball
+├── bundle.py              # Standalone bundler (no compiler needed)
+├── xloader.lds            # Linker script for the loader stub
+├── src/                   # Loader source (start.S, main.c, string.c)
+├── include/               # bundle.h (descriptor struct)
+└── scripts/               # QEMU runner scripts
+```
+
+**Build flow:**
+
+```
+xloader.elf  ──objcopy──→  xloader.bin     (cmake target)
+xloader.elf + bundle.py + bundle.toml → bundle.elf   (bundler)
+bundle.elf  ──QEMU -kernel──→  boots Xen + domains
+```
+
+## Project Structure
+
+### Core Build (`cmake -S . -B build`)
+
+Only builds the loader stub — no external dependencies:
+
+```bash
+cmake --build build --target xloader        # → build/xloader.elf
+cmake --build build --target release        # → build/release/xloader-bundle.tar.gz
+```
+
+The release tarball packages `xloader.elf`, `bundle.py`, QEMU scripts, and README.
+Users take these files and supply their own `bundle.toml` with `xen`, kernel,
+initrd paths.
+
+### Standalone Bundler (`bundle.py`)
+
+Reads `bundle.toml` and produces `bundle.elf` with correct ELF PT_LOAD segments
+for each payload. No toolchain needed — uses `struct.pack` for ELF headers.
+
+```bash
+bundle.py --config bundle.toml -o bundle.elf
+```
+
+### Test Subproject (`test/` — optional)
+
+Fetches and builds Xen, Linux, musl, BusyBox from pinned release tarballs, then
+runs the full integration test:
+
+```bash
+cmake -S test -B build/test -DXLOADER_FETCH_EXTERNALS=ON
+cmake --build build/test --target run-qemu-test
+```
+
+## Domain Configuration (`bundle.toml`)
+
+```toml
+[xloader]
+elf = "build/xloader.elf"
+
+[xen]
+path = "xen.elf"
+
+[[domains]]
+type = "domU"
+kernel = "Image"
+initrd = "initramfs.cpio"
+memory_kb = 131072
+cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
+passthrough = ['/pl031@9010000']
+
+[[domains]]
+type = "domU"
+kernel = "Image"
+initrd = "initramfs.cpio"
 memory_kb = 131072
 cmdline = "console=ttyAMA0 earlycon=pl011,0x22000000 loglevel=8 ignore_loglevel rdinit=/init"
 passthrough = []
 ```
 
-`type` is either `domU` or `dom0`. At most one `dom0` is allowed. Passthrough is only supported for `domU`; a `dom0` entry with `passthrough` is rejected.
+- `type` is `domU` or `dom0`. At most one `dom0` allowed.
+- `passthrough` is only supported for `domU`. Each entry is a DTB path
+  (e.g., `/pl031@9010000`). The loader builds a passthrough FDT at runtime
+  using libfdt, adds `xen,reg`, `xen,path`, and
+  `xen,force-assign-without-iommu` properties, then registers it with Xen
+  as a `multiboot,device-tree` boot module.
 
-Each passthrough item is a path to a node in the source QEMU DTB. The loader copies the node into the Xen domain node in the host DTB. For Xen to propagate the node into the guest device tree, the domain node must use Xen's DOMU passthrough bindings (e.g., `xen,reg`, `iommu`); this requires Xen-side support beyond the current scope.
+## How It Works
 
-The smoke test includes a `/pl031@9010000` passthrough entry for the first domain to validate the data flow (visible in boot logs as `xloader: passthrough /pl031@9010000`).
+1. **QEMU** loads `bundle.elf` — ELF segments place the xloader stub at
+   `0x40000000` and all payloads (Xen, kernels, initrds) at their respective
+   VMAs.
+2. **xloader** receives the QEMU DTB via x0, copies it to BSS, patches it:
+   - Adds `xen,xen-bootargs` to `/chosen`
+   - For each domU domain: creates a `domain@X` node with kernel/initrd
+     modules, memory, vpl011, and passthrough DTB module
+   - For passthrough: builds a minimal FDT in BSS slack space, copies
+     device nodes from the host DTB, wraps in a `passthrough` container
+3. **Xen** receives the patched DTB, finds the domain nodes,
+   processes the `multiboot,device-tree` modules (which are recognized via
+   dual compatible `"multiboot,device-tree\0multiboot,module"`), and
+   assigns passthrough devices (MMIO mapping + interrupt routing).
+4. **Domains** boot with their assigned devices.
 
-## QEMU Dom0less Test
-
-Run the two-domain dom0less smoke test:
+## Release Packaging
 
 ```bash
-cmake --build build/cmake --target run-qemu-dom0less
+cmake --build build --target release
+# → build/release/xloader-bundle.tar.gz
+#   Contents: xloader.elf, bundle.py, README.md, scripts/
 ```
 
-Run an interactive dom0less session without the smoke-test timeout:
+Users can then:
+```bash
+tar xzf xloader-bundle.tar.gz
+# Write bundle.toml with their paths
+bundle.py --config bundle.toml
+qemu-system-aarch64 -M virt,virtualization=on -kernel bundle.elf ...
+```
+
+## QEMU Interactive Session
 
 ```bash
-cmake --build build/cmake --target run-qemu-dom0less-interactive
+qemu-system-aarch64 -M virt,virtualization=on,secure=off,gic-version=3 \
+  -cpu cortex-a57 -m 1G -kernel bundle.elf \
+  -nographic -no-reboot -serial mon:stdio
 ```
 
-QEMU starts with Xen serial input attached to the first Linux domain. Type `Ctrl-a` three times to switch Xen console input. Stop the session from the QEMU monitor or by interrupting the build command.
+Or via CMake (after placing `bundle.elf` in the build directory):
+```bash
+cmake -D XLOADER_BUNDLE=/path/to/bundle.elf build
+cmake --build build --target run-qemu-dom0less-interactive
+```
 
-The test writes:
+## Smoke Test
 
-- `build/cmake/logs/qemu-combined.log`: xloader, Xen, and both Linux domain consoles
-- `build/cmake/logs/xen.log`: Xen-prefixed lines
-- `build/cmake/logs/domains.log`: per-domain readiness and interactive-console markers
-- `build/cmake/logs/summary.log`: paths and QEMU exit status
+The `test/` subproject provides a full integration build including Xen,
+Linux, musl, and BusyBox:
 
-The BusyBox initramfs prints `XLOADER_DOMAIN_READY` and `XLOADER_DOMAIN_INTERACTIVE` markers. The test fails if xloader does not jump to Xen, Xen logs are absent, or either Linux domain does not reach userspace.
+```bash
+cmake -S test -B build/test -DXLOADER_FETCH_EXTERNALS=ON
+cmake --build build/test --target run-qemu-test
+```
+
+Asserts:
+- xloader jumps to Xen
+- Both Xen and guest console output appear
+- Passthrough device `/pl031@9010000` visible in the second guest
