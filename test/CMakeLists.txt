@@ -23,29 +23,6 @@ set(XLOADER_BUSYBOX_SHA256 "b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80c
 set(XLOADER_MUSL_URL "https://musl.libc.org/releases/musl-1.2.5.tar.gz")
 set(XLOADER_MUSL_SHA256 "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4")
 
-set(XLOADER_DTC_URL "https://www.kernel.org/pub/software/utils/dtc/dtc-1.7.1.tar.xz")
-set(XLOADER_DTC_SHA256 "398098bac205022b39d3dce5982b98c57f1023f3721a53ebcbb782be4cf7885e")
-
-FetchContent_Declare(dtc
-  URL ${XLOADER_DTC_URL}
-  URL_HASH SHA256=${XLOADER_DTC_SHA256}
-)
-FetchContent_GetProperties(dtc)
-if(NOT dtc_POPULATED)
-  FetchContent_Populate(dtc)
-endif()
-set(XLOADER_DTC_BINARY "${dtc_SOURCE_DIR}/dtc")
-
-# Build dtc
-add_custom_command(
-  OUTPUT ${XLOADER_DTC_BINARY}
-  COMMAND ${CMAKE_COMMAND} -E env CROSS_COMPILE= make -C ${dtc_SOURCE_DIR} dtc
-  DEPENDS ${dtc_SOURCE_DIR}/Makefile
-  COMMENT "Building dtc"
-  VERBATIM
-)
-add_custom_target(dtc-bin DEPENDS ${XLOADER_DTC_BINARY})
-
 if(XLOADER_FETCH_EXTERNALS)
   FetchContent_Declare(xen URL ${XLOADER_XEN_URL} URL_HASH SHA256=${XLOADER_XEN_SHA256})
   FetchContent_Declare(linux URL ${XLOADER_LINUX_URL} URL_HASH SHA256=${XLOADER_LINUX_SHA256})
@@ -96,15 +73,13 @@ if(XLOADER_FETCH_EXTERNALS)
   set(BUNDLE_TOML "${CMAKE_BINARY_DIR}/bundle.toml")
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/bundle.toml.in ${BUNDLE_TOML})
 
-  # Run bundle.py to produce bundle.bin
-  set(BUNDLE_BIN "${CMAKE_BINARY_DIR}/bundle.bin")
   add_custom_command(OUTPUT ${BUNDLE_BIN}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../bundle.py
-      --config ${BUNDLE_TOML} --dtc-path ${XLOADER_DTC_BINARY} -o ${BUNDLE_BIN}
-    DEPENDS ${XEN_IMAGE} ${LINUX_IMAGE} ${INITRAMFS} ${XLOADER_ELF} ${XLOADER_DTC_BINARY} ${BUNDLE_TOML}
-    COMMENT "Generating bundle.bin")
+      --config ${BUNDLE_TOML} -o ${BUNDLE_BIN}
+    DEPENDS ${XEN_IMAGE} ${LINUX_IMAGE} ${INITRAMFS} ${XLOADER_ELF} ${BUNDLE_TOML}
+    COMMENT "Generating bundle.elf")
   add_custom_target(bundle DEPENDS ${BUNDLE_BIN})
-  add_dependencies(bundle xen-arm64 linux-arm64 busybox-initramfs dtc-bin)
+  add_dependencies(bundle xen-arm64 linux-arm64 busybox-initramfs)
 
   # QEMU test
   add_custom_target(run-qemu-test

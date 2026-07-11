@@ -8,9 +8,7 @@ bundle.elf with correct PT_LOAD segments for each payload.
 import argparse
 import os
 import struct
-import subprocess
 import sys
-import tempfile
 
 PAGE_SIZE = 0x10000
 MAX_DOMAINS = 16
@@ -110,71 +108,9 @@ def load_config(path):
     return xl_cfg, xen_cfg, domains, dom0_idx
 
 
-def build_passthrough_dtb(src_dtb, paths, dtc_path, output_path):
-    if not paths or not dtc_path:
-        return False
-    dts = subprocess.check_output([dtc_path, "-I", "dtb", "-O", "dts", src_dtb], text=True)
-
-    def extract_node(text, path):
-        target = path.strip("/").split("/")[-1]
-        in_target = False
-        brace_count = 0
-        result = []
-        for line in text.split("\n"):
-            s = line.strip()
-            if not in_target:
-                if s.startswith(target + " {"):
-                    in_target = True
-                    result.append(line)
-                    brace_count = s.count("{") - s.count("}")
-            else:
-                result.append(line)
-                brace_count += s.count("{") - s.count("}")
-                if brace_count <= 0:
-                    break
-        return "\n".join(result) if result else None
-
-    passthrough_dts = "/dts-v1/;\n/ {\n\t#address-cells = <0x02>;\n\t#size-cells = <0x02>;\n\tpassthrough {\n"
-    for p in paths:
-        node = extract_node(dts, p)
-        if not node:
-            continue
-        lines = node.split("\n")
-        reg_line = ""
-        for line in lines:
-            s = line.strip()
-            if s.startswith("reg ="):
-                reg_line = s
-                break
-        xen_reg_val = ""
-        if reg_line:
-            core = reg_line.split("=", 1)[-1].strip().rstrip(";").strip().strip("<>")
-            parts = core.split()
-            if len(parts) >= 4:
-                xen_reg_val = "<" + " ".join(parts) + " " + " ".join(parts[:2]) + ">"
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i].strip() == "};":
-                lines.insert(i, f'\t\txen,reg = {xen_reg_val};' if xen_reg_val else "")
-                lines.insert(i, f'\t\txen,path = "{p}";')
-                lines.insert(i, "\t\txen,force-assign-without-iommu;")
-                break
-        passthrough_dts += "\t\t" + "\n\t\t".join(lines) + "\n"
-    passthrough_dts += "\t};\n};\n"
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".dts", delete=False) as f:
-        f.write(passthrough_dts)
-        fn = f.name
-    try:
-        subprocess.check_call([dtc_path, "-I", "dts", "-O", "dtb", "-o", output_path, fn])
-    finally:
-        os.unlink(fn)
-    return True
-
-
 def main():
     parser = argparse.ArgumentParser(description="Xen Bundle Builder")
     parser.add_argument("--config", default="bundle.toml")
-    parser.add_argument("--dtc-path", default=None)
     parser.add_argument("-o", "--output", default="bundle.elf")
     args = parser.parse_args()
 
@@ -200,24 +136,6 @@ def main():
     payload_blobs = [xen_data]
     payload_tags = ["xen"]
 
-    build_dir = os.path.dirname(args.output) or "."
-    for i, dom in enumerate(domains):
-        if dom["passthrough"] and args.dtc_path:
-            qemu = os.environ.get("QEMU", "qemu-system-aarch64")
-            dtb_src = os.path.join(build_dir, f".ps_{i}.dtb")
-            try:
-                subprocess.check_call([qemu, "-M", "virt,virtualization=on,secure=off,gic-version=3",
-                    "-cpu", os.environ.get("QEMU_CPU", "cortex-a57"), "-m", "1G",
-                    "-machine", f"dumpdtb={dtb_src}"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-            except Exception as exc:
-                print(f"bundle: DTB failed: {exc}", file=sys.stderr); sys.exit(1)
-            out_dtb = os.path.join(build_dir, f"domain_{i}_passthrough.dtb")
-            if build_passthrough_dtb(dtb_src, dom["passthrough"], args.dtc_path, out_dtb):
-                dom["dtb_path"] = out_dtb
-                print(f"bundle: domain[{i}] passthrough → {out_dtb}", file=sys.stderr)
-            os.unlink(dtb_src)
-
     for dom in domains:
         if dom.get("kernel"):
             payload_blobs.append(read_file(dom["kernel"]))
@@ -225,9 +143,6 @@ def main():
         if dom.get("initrd"):
             payload_blobs.append(read_file(dom["initrd"]))
             payload_tags.append("initrd")
-        if dom.get("dtb_path"):
-            payload_blobs.append(read_file(dom["dtb_path"]))
-            payload_tags.append("dtb")
 
     # Calculate addresses
     desc_off = align(len(xl_binary), 4096) + 0x200000 + 0x4000
@@ -251,6 +166,15 @@ def main():
 
     # Build bundle descriptor
     domain_blob = bytearray()
+    # Compute passthrough string offsets (within the passthrough_data block after domain entries)
+    passthrough_offsets = []
+    pt_cumulative = 0
+    for dom in domains:
+        passthrough_offsets.append(pt_cumulative)
+        for _ in dom["passthrough"]:
+            pt_cumulative += len(_) + 1
+        pt_cumulative += 1  # trailing null
+
     pi = 1  # payload_blobs index for current domain's first payload
     for i, dom in enumerate(domains):
         ka = addrs[pi + 1] if dom.get("kernel") else 0  # addrs[0]=xloader, addrs[1]=xen
@@ -259,18 +183,23 @@ def main():
         ia = addrs[pi + 1] if dom.get("initrd") else 0
         it = len(payload_blobs[pi]) if dom.get("initrd") else 0
         pi += 1 if dom.get("initrd") else 0
-        da = addrs[pi + 1] if dom.get("dtb_path") else 0
-        ds = len(payload_blobs[pi]) if dom.get("dtb_path") else 0
-        pi += 1 if dom.get("dtb_path") else 0
         domain_blob += struct.pack("<Q", ka) + struct.pack("<Q", ks)
         domain_blob += struct.pack("<Q", ia) + struct.pack("<Q", it)
-        domain_blob += struct.pack("<Q", da) + struct.pack("<Q", ds)
+        domain_blob += struct.pack("<Q", 0) + struct.pack("<Q", 0)  # dtb_addr, dtb_size (runtime)
         domain_blob += struct.pack("<Q", dom.get("memory_kb", 0))
         cmd = dom["cmdline"][:XEN_BUNDLE_CMDLINE_LEN - 1].encode()
         domain_blob += cmd + b"\0" * (XEN_BUNDLE_CMDLINE_LEN - len(cmd))
+        pt_abs_off = 88 + len(domains) * (8 * 7 + XEN_BUNDLE_CMDLINE_LEN + 16) + passthrough_offsets[i]
         domain_blob += struct.pack("<I", len(dom["passthrough"]))
-        domain_blob += struct.pack("<I", 0)
+        domain_blob += struct.pack("<I", pt_abs_off if dom["passthrough"] else 0)
         domain_blob += struct.pack("<I", 0) + struct.pack("<I", 0)
+
+    # Build passthrough string table
+    passthrough_data = bytearray()
+    for dom in domains:
+        for pt in dom["passthrough"]:
+            passthrough_data.extend(pt.encode() + b"\0")
+        passthrough_data.extend(b"\0")
 
     ram_size = int(os.environ.get("QEMU_MEM", "1G").rstrip("G")) * 0x40000000
     xen_entry = elf_read_entry(xen_path)

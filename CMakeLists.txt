@@ -29,19 +29,14 @@ if(NOT dtc_POPULATED)
 endif()
 set(XLOADER_LIBFDT_SRC_DIR "${dtc_SOURCE_DIR}/libfdt")
 
-# Build dtc binary (used by bundle.py for passthrough DTB generation)
-set(XLOADER_DTC_BINARY "${dtc_SOURCE_DIR}/dtc")
-add_custom_command(
-  OUTPUT ${XLOADER_DTC_BINARY}
-  COMMAND ${CMAKE_COMMAND} -E env CROSS_COMPILE= make -C ${dtc_SOURCE_DIR} dtc
-  COMMAND ${CMAKE_COMMAND} -E env
-    sh -c "sed -i 's|#include <stdlib.h>|/* freestanding */|' '${dtc_SOURCE_DIR}/libfdt/libfdt_env.h'"
-  DEPENDS ${dtc_SOURCE_DIR}/Makefile
-  COMMENT "Building dtc"
-  VERBATIM
-)
+# Patch libfdt_env.h for -nostdlib builds (only if not yet patched)
+set(LIBFDT_ENV_PATH "${XLOADER_LIBFDT_SRC_DIR}/libfdt_env.h")
+file(READ "${LIBFDT_ENV_PATH}" LIBFDT_ENV_CONTENT)
+if("#include <stdlib.h>" IN_LIST LIBFDT_ENV_CONTENT)
+  string(REPLACE "#include <stdlib.h>" "/* freestanding */" LIBFDT_ENV_CONTENT "${LIBFDT_ENV_CONTENT}")
+  file(WRITE "${LIBFDT_ENV_PATH}" "${LIBFDT_ENV_CONTENT}")
+endif()
 file(WRITE ${CMAKE_BINARY_DIR}/compiler.h "#include <stddef.h>\nchar *strrchr(const char *s, int c);\nvoid abort(void);\n")
-add_custom_target(dtc-bin DEPENDS ${XLOADER_DTC_BINARY})
 
 # ------------------------------------------------------------------
 # XLOADER — the loader stub binary
@@ -128,7 +123,7 @@ add_custom_command(
   VERBATIM
 )
 
-add_custom_target(xloader DEPENDS ${XLOADER_BIN} dtc-bin)
+add_custom_target(xloader DEPENDS ${XLOADER_BIN})
 
 # ------------------------------------------------------------------
 # RELEASE — package for distribution

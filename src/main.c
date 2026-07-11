@@ -75,6 +75,7 @@ static void printf(const char* fmt, ...) {
 }
 
 #define DTB_BUF_SIZE 0x200000
+#define PT_BUF_OFFSET 0x10000
 
 extern char _dtb_buffer[];
 extern char _xloader_end[];
@@ -112,6 +113,27 @@ static int add_module_node(void* fdt, int parent, const char* name,
         fdt_setprop_string(fdt, node, "bootargs", bootargs);
     return 0;
 }
+
+
+static void copy_node_props(void* dst_fdt, int dst_off,
+                            void* src_fdt, int src_off) {
+    int prop;
+    fdt_for_each_property_offset(prop, src_fdt, src_off) {
+        int len;
+        const struct fdt_property* p = fdt_get_property_by_offset(src_fdt, prop, &len);
+        if (!p) continue;
+        const char* pname = fdt_string(src_fdt, fdt32_to_cpu(p->nameoff));
+        fdt_setprop(dst_fdt, dst_off, pname, p->data, fdt32_to_cpu(p->len));
+    }
+    int sub;
+    fdt_for_each_subnode(sub, src_fdt, src_off) {
+        const char* sname = fdt_get_name(src_fdt, sub, NULL);
+        int new_sub = fdt_add_subnode(dst_fdt, dst_off, sname);
+        if (new_sub >= 0)
+            copy_node_props(dst_fdt, new_sub, src_fdt, sub);
+    }
+}
+
 
 void main(uint64_t dtb_ptr) {
     uint64_t desc_off = ((uint64_t)&_xloader_end + 63) & ~63ULL;
@@ -227,14 +249,44 @@ void main(uint64_t dtb_ptr) {
                                 d->initrd_addr, d->initrd_size,
                                 compat_ramdisk, sizeof(compat_ramdisk), 0);
             }
-            if (d->dtb_addr && d->dtb_size) {
-                char mname[32];
-                fmt_node_name(mname, sizeof(mname), "module", mi++);
-                static const char compat_dtb[] = "multiboot,device-tree\0multiboot,module";
-                add_module_node(patched_fdt, dom_node, mname,
-                                d->dtb_addr, d->dtb_size,
-                                compat_dtb, sizeof(compat_dtb), 0);
-                printf("(LDR) passthrough dtb @ 0x%lx\n", d->dtb_addr);
+            if (d->num_passthrough && d->passthrough_off) {
+                if (d->num_passthrough > XEN_BUNDLE_MAX_PASSTHROUGH)
+                    goto fail;
+
+                void* pt_buf = (void*)_dtb_buffer + PT_BUF_OFFSET;
+                int ret = fdt_create_empty_tree(pt_buf, 0x10000);
+                if (ret < 0) { printf("(LDR) pt create fail\n"); goto fail; }
+
+                int pt_cont = fdt_add_subnode(pt_buf, 0, "passthrough");
+                if (pt_cont < 0) { printf("(LDR) pt container fail\n"); goto fail; }
+
+                const char* p = (const char*)desc + d->passthrough_off;
+                int copied = 0;
+                for (uint32_t pi = 0; pi < d->num_passthrough; pi++) {
+                    int src_off = fdt_path_offset(host_fdt, p);
+                    if (src_off >= 0) {
+                        const char* nm = fdt_get_name(host_fdt, src_off, NULL);
+                        int new_off = fdt_add_subnode(pt_buf, pt_cont, nm);
+                        if (new_off >= 0) {
+                            copy_node_props(pt_buf, new_off, host_fdt, src_off);
+                        }
+                        copied = 1;
+                        printf("(LDR) passthrough %s\n", p);
+                    }
+                    p += strlen(p) + 1;
+                }
+
+                if (copied) {
+                    fdt_pack(pt_buf);
+                    char mname[32];
+                    fmt_node_name(mname, sizeof(mname), "module", mi++);
+                    static const char compat_pt[] = "multiboot,device-tree\0multiboot,module";
+                    add_module_node(patched_fdt, dom_node, mname,
+                                    (uint64_t)pt_buf, fdt_totalsize(pt_buf),
+                                    compat_pt, sizeof(compat_pt), 0);
+                    printf("(LDR) passthrough dtb @ 0x%lx size 0x%x\n",
+                           (uint64_t)pt_buf, fdt_totalsize(pt_buf));
+                }
             }
         }
     }
@@ -246,8 +298,6 @@ void main(uint64_t dtb_ptr) {
            dtb_final, final_size, desc->xen_entry);
 
     printf("(LDR) jumping to Xen\n");
-    // Debug: verify Xen entry code
-    uint32_t* xen_code = (uint32_t*)desc->xen_entry;
     jump_to_xen(desc->xen_entry, dtb_final);
 
 fail:
