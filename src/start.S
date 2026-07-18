@@ -4,13 +4,38 @@
 .section .text.image_header, "ax"
 .globl _image_start
 _image_start:
-    .byte 0x4d, 0x5a, 0x00, 0x91          /* "MZ" → add x13, x18, #0x16 (harmless) */
-    b       _start                         /* branch over the header */
-    .quad   0          /* text_offset — 0 = relocatable */
-    .8byte  _xloader_end - _image_start    /* image_size  */
-    .quad   0          /* flags: LE (bit0=0), 4K pages (bit1=0) */
-    .byte   0x41, 0x52, 0x4d, 0x64         /* "ARM\x64" magic */
-    .long   0          /* reserved */
+    /* ARM64 Linux boot Image header (64 bytes)
+     *
+     * Offset  Size  Field
+     * ------  ----  -----
+     *  0x00    4    b _start        — entry point (branches to _start)
+     *  0x04    4    reserved
+     *  0x08    8    text_offset     — 0 = relocatable
+     *  0x10    8    image_size      — total memory footprint
+     *  0x18    8    flags           — see below
+     *  0x20    8    reserved
+     *  0x28    8    reserved
+     *  0x30    8    reserved
+     *  0x38    4    "ARM\x64"       — AArch64 magic (0x644d5241)
+     *  0x3C    4    reserved
+     *
+     * Flags:
+     *   bit 0:   0 = LE,     1 = BE
+     *   bit 1:   0 = 4K pg,  1 = 16K/64K pg
+     *   bits[3:2]: 00 = 2MB align recommended
+     *              01 = 2MB align required
+     *              10 = 64K align required
+     */
+    b       _start
+    .word   0                         /* reserved */
+    .quad   0                         /* text_offset — relocatable */
+    .quad   _xloader_end - _image_start /* image_size */
+    .quad   0x08                      /* flags: LE, 4K pages, 2MB align required */
+    .quad   0                         /* reserved */
+    .quad   0                         /* reserved */
+    .quad   0                         /* reserved */
+    .word   0x644d5241                /* "ARM\x64" magic */
+    .word   0                         /* reserved */
 .text
 .section .text.entry, "ax"
 #else
