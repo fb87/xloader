@@ -1,8 +1,6 @@
 OUTPUT_FORMAT(elf64-littleaarch64)
 OUTPUT_ARCH(aarch64)
-ENTRY(_start)
-
-BASE_ADDR = 0x40000000;
+ENTRY(_image_start)
 
 PHDRS
 {
@@ -15,7 +13,7 @@ SECTIONS
 {
     . = BASE_ADDR;
 
-    .text : { *(.text.entry) *(.text*) } :text
+    .text : { *(.text.image_header) *(.text.entry) *(.text*) } :text
     .rodata : { *(.rodata*) } :text
     .data : { *(.data*) } :data
 

@@ -5,6 +5,8 @@ include(FetchContent)
 cmake_policy(SET CMP0169 OLD)
 
 set(XLOADER_CROSS_PREFIX "aarch64-linux-gnu-" CACHE STRING "AArch64 cross toolchain prefix")
+set(XLOADER_BASE_ADDR "0x40000000" CACHE STRING "Xloader load address (must match QEMU/bootloader RAM start)")
+option(XLOADER_IMAGE_HEADER "Prepend ARM64 Linux boot Image header for bootloader compatibility" OFF)
 
 # dtc/libfdt (mandatory for xloader build)
 set(XLOADER_DTC_URL "https://www.kernel.org/pub/software/utils/dtc/dtc-1.7.1.tar.xz" CACHE STRING "Pinned dtc/libfdt release tarball URL")
@@ -64,10 +66,15 @@ set(XLOADER_OBJECTS
   ${XLOADER_LIBFDT_OBJECTS}
 )
 
+set(XLOADER_ASFLAGS "")
+if(XLOADER_IMAGE_HEADER)
+  list(APPEND XLOADER_ASFLAGS "-DXL_IMAGE_HEADER")
+endif()
+
 add_custom_command(
   OUTPUT ${XLOADER_BUILD_DIR}/start.o
   COMMAND ${CMAKE_COMMAND} -E make_directory ${XLOADER_BUILD_DIR}
-  COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} -c ${CMAKE_SOURCE_DIR}/src/start.S -o ${XLOADER_BUILD_DIR}/start.o
+  COMMAND ${XLOADER_CROSS_PREFIX}gcc ${XLOADER_CFLAGS} ${XLOADER_ASFLAGS} -c ${CMAKE_SOURCE_DIR}/src/start.S -o ${XLOADER_BUILD_DIR}/start.o
   DEPENDS ${CMAKE_SOURCE_DIR}/src/start.S
   VERBATIM
 )
@@ -96,6 +103,7 @@ endforeach()
 add_custom_command(
   OUTPUT ${XLOADER_ELF}
   COMMAND ${XLOADER_CROSS_PREFIX}ld -T ${CMAKE_SOURCE_DIR}/xloader.lds
+          --defsym=BASE_ADDR=${XLOADER_BASE_ADDR}
           -o ${XLOADER_ELF} -Map ${XLOADER_BUILD_DIR}/xloader.map
           ${XLOADER_OBJECTS}
   DEPENDS ${XLOADER_OBJECTS}

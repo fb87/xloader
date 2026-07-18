@@ -111,6 +111,7 @@ def load_config(path):
 def main():
     parser = argparse.ArgumentParser(description="Xen Bundle Builder")
     parser.add_argument("--config", default="bundle.toml")
+    parser.add_argument("--base", default=None, help="Override bundle base address (hex)")
     parser.add_argument("-o", "--output", default="bundle.elf")
     args = parser.parse_args()
 
@@ -123,6 +124,8 @@ def main():
 
     xl_path = xl_cfg.get("elf") or xl_cfg.get("path", "xloader.elf")
     base, xl_binary, xl_segs = elf_extract_binary(xl_path)
+    if args.base:
+        base = int(args.base, 16)
     print(f"bundle: xloader base=0x{base:x} size=0x{len(xl_binary):x}", file=sys.stderr)
 
     xen_path = xen_cfg.get("path") or "xen.elf"
@@ -203,6 +206,8 @@ def main():
 
     ram_size = int(os.environ.get("QEMU_MEM", "1G").rstrip("G")) * 0x40000000
     xen_entry = elf_read_entry(xen_path)
+    if args.base:
+        xen_entry = addrs[1]
     desc = bytearray()
     desc += struct.pack("<Q", XEN_BUNDLE_MAGIC) + struct.pack("<Q", XEN_BUNDLE_VERSION)
     desc += struct.pack("<Q", base)
