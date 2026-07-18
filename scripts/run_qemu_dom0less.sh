@@ -7,6 +7,13 @@ set -euo pipefail
 : "${QEMU_MEM:=1G}"
 : "${QEMU_CPU:=cortex-a57}"
 : "${QEMU_TIMEOUT:=120}"
+: "${QEMU_BASE:=0x40000000}"
+
+# .elf → -kernel; .bin → -device loader (raw Image)
+case "${BUNDLE}" in
+  *.elf) KERNEL_ARG=("-kernel" "${BUNDLE}") ;;
+  *)     KERNEL_ARG=("-device" "loader,file=${BUNDLE},addr=${QEMU_BASE},cpu-num=0,force-raw=on") ;;
+esac
 
 mkdir -p "${LOG_DIR}"
 combined="${LOG_DIR}/qemu-combined.log"
@@ -21,7 +28,7 @@ timeout "${QEMU_TIMEOUT}" "${QEMU}" \
   -M virt,virtualization=on,secure=off,gic-version=3 \
   -cpu "${QEMU_CPU}" \
   -m "${QEMU_MEM}" \
-  -kernel "${BUNDLE}" \
+  "${KERNEL_ARG[@]}" \
   -nographic \
   -no-reboot \
   -serial mon:stdio \

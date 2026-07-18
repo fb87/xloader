@@ -1,5 +1,5 @@
 [xloader]
-elf = "@XLOADER_ELF@"
+path = "@XLOADER_BIN@"
 
 [xen]
 path = "@XEN_IMAGE@"
