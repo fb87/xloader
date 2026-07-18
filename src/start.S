@@ -6,9 +6,9 @@
 _image_start:
     .byte 0x4d, 0x5a, 0x00, 0x91          /* "MZ" → add x13, x18, #0x16 (harmless) */
     b       _start                         /* branch over the header */
-    .quad   0          /* text_offset — updated by bootloader */
-    .quad   0          /* image_size   — updated by bootloader */
-    .quad   0          /* flags */
+    .quad   0          /* text_offset — 0 = relocatable */
+    .8byte  _xloader_end - _image_start    /* image_size  */
+    .quad   0          /* flags: LE (bit0=0), 4K pages (bit1=0) */
     .byte   0x41, 0x52, 0x4d, 0x64         /* "ARM\x64" magic */
     .long   0          /* reserved */
 .text
