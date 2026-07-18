@@ -1,3 +1,8 @@
+.equ UART_BASE, 0x09000000
+.equ UART_DR,   0x000
+.equ UART_FR,   0x018
+.equ UART_TXFF, 5
+
 .section .text.entry, "ax"
 
 #ifdef XL_IMAGE_HEADER
@@ -65,7 +70,40 @@ _start:
     cbnz x1, 1b
 
 2:  mov x0, x19
+
+    /* Debug: print '(LDR) start\n' via pl011 UART */
+    adrp x0, msg_start
+    add  x0, x0, :lo12:msg_start
+        add  x0, x0, #1
+    bl   puts
+
     bl main
+
+puts:
+    mov x16, x30
+    adrp x2, uart_base_addr
+    add  x2, x2, :lo12:uart_base_addr
+    ldr x2, [x2]
+1:  ldrb w0, [x0]
+    cbz w0, 3f
+2:  ldr w3, [x2, #0x18]      /* UART_FR */
+    tbnz w3, #5, 2b           /* wait while TXFF (bit 5) */
+    str w0, [x2]              /* UART_DR */
+    add x0, x0, #1
+    cmp w0, #'\n'
+    b.ne 1b
+    mov w0, #'\r'
+    str w0, [x2]              /* extra \r for \n */
+    b 1b
+3:  ret x16
+
+.section .rodata, "a"
+.align 8
+uart_base_addr:
+    .quad 0x09000000
+msg_start:
+    .asciz "(LDR) start\n"
+.text
 
 loop:
     wfi
