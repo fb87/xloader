@@ -9,3 +9,8 @@ _deps/
 *.elf
 Image
 xen.elf
+.agents/
+.claude/
+.memory/
+data/
+skills-lock.json

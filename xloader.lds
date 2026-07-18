@@ -4,13 +4,20 @@ ENTRY(_start)
 
 BASE_ADDR = 0x40000000;
 
+PHDRS
+{
+  text PT_LOAD FLAGS(5);   /* PF_R | PF_X */
+  data PT_LOAD FLAGS(6);   /* PF_R | PF_W */
+  bss  PT_LOAD FLAGS(6);
+}
+
 SECTIONS
 {
     . = BASE_ADDR;
 
-    .text : { *(.text.entry) *(.text*) }
-    .rodata : { *(.rodata*) }
-    .data : { *(.data*) }
+    .text : { *(.text.entry) *(.text*) } :text
+    .rodata : { *(.rodata*) } :text
+    .data : { *(.data*) } :data
 
     .bss : ALIGN(16) {
         _bss_start = .;
@@ -20,7 +27,7 @@ SECTIONS
         . = ALIGN(4096);
         _dtb_buffer = .;
         . = . + 0x200000;
-    }
+    } :bss
     _stack_start = .;
     . = . + 0x4000;
     _stack_end = .;
