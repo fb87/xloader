@@ -112,6 +112,8 @@ def main():
     parser = argparse.ArgumentParser(description="Xen Bundle Builder")
     parser.add_argument("--config", default="bundle.toml")
     parser.add_argument("--base", default=None, help="Override bundle base address (hex)")
+    parser.add_argument("--format", default="elf", choices=["elf", "bin"],
+                        help="Output format: elf (QEMU -kernel) or bin (bootloader raw)")
     parser.add_argument("-o", "--output", default="bundle.elf")
     args = parser.parse_args()
 
@@ -218,16 +220,37 @@ def main():
     desc += struct.pack("<Q", 0) + struct.pack("<Q", 0) + struct.pack("<Q", ram_size)
     desc += domain_blob + passthrough_data
 
-    # --- Assemble ELF ---
-    # Collect all segments: (vaddr, data)
+    # --- Build output: segments for both ELF and BIN formats ---
     segments = [(s[0], read_file(xl_path)[s[1]:s[1] + s[2]]) for s in xl_segs if s[2] > 0]
-    # Add desc segment
     segments.append((base + desc_off, bytes(desc)))
-    # Add payloads
     for i in range(len(payload_blobs)):
         segments.append((addrs[1 + i], payload_blobs[i]))
 
-    # Write file: ELF header + PHDRs + data
+    if args.format == "bin":
+        out = bytearray()
+        # Place xloader binary first (at offset 0, VMA = base)
+        out.extend(xl_binary)
+        # Pad to desc_off and write desc
+        pad = (base + desc_off) - (base + len(out))
+        if pad > 0:
+            out.extend(b"\0" * pad)
+        out.extend(bytes(desc))
+        # Pad to first payload
+        pad = addrs[1] - (base + len(out))
+        if pad > 0:
+            out.extend(b"\0" * pad)
+        # Append payloads
+        for blob in payload_blobs:
+            out.extend(blob)
+            pad = align(len(out)) - len(out)
+            if pad:
+                out.extend(b"\0" * pad)
+        with open(args.output, "wb") as f:
+            f.write(out)
+        print(f"bundle: done → {args.output} (0x{len(out):x})", file=sys.stderr)
+        return
+
+    # --- ELF output ---
     phnum = len(segments)
     phentsize = 56
     # We'll place PHDRs at offset 0x40, header is 64 bytes
