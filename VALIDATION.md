@@ -1,21 +1,19 @@
-# Validation — xloader v6
+# v7 validation status
 
-## Static validation completed here
+## Completed in this environment
 
-- PASS: guest AArch64 kernels are handled as raw payloads; domain kernel paths are never passed to the ELF parser.
-- PASS: `kernel_format = "linux-image"` validates the 64-byte AArch64 Linux Image header and `ARM\x64` magic at offset `0x38`.
-- PASS: descriptor kernel size remains the exact input file byte size required by Xen's dom0less module description.
-- PASS: multiple-domain descriptor and passthrough path tables are bounded by ABI sanity limits.
-- PASS: passthrough paths must be absolute FDT paths.
-- PASS: `boot_magic` pointless discard remains removed.
-- PASS: no Zig identifier named `align` is used.
-- PASS: AArch64 startup uses PC-relative references.
-- PASS: x86 32-bit entry has been converted to runtime-base-relative references before its long-mode transition; 64-bit code uses RIP-relative references.
-- PASS: shell scripts parse with `bash -n`.
+- PASS: AArch64 entry assembly parses with Clang's AArch64 assembler.
+- PASS: AArch64 Xen-entry assembly parses with Clang's AArch64 assembler.
+- PASS: x86_64 Multiboot/long-mode assembly parses with Clang's x86_64 assembler.
+- PASS: all shell scripts pass `bash -n`.
+- PASS: owned Zig files contain no identifier named `align`.
+- PASS: the prior `boot_magic` pointless-discard regression is not present.
+- PASS: canonical sample contains two distinct domains and distinct `xloader.domain=` identity arguments.
+- PASS: v7 source includes host bundle inspection, duplicate-domain/path validation, and per-domain passthrough partial-DT construction.
 
-## Runtime validation required
+## Not executable in this environment
 
-This execution environment has no Nix/Zig/QEMU, so the boot gate must be run in the project dev shell:
+This runtime does not provide Nix, Zig, QEMU, or the pinned Nix store inputs. Therefore the following are **acceptance commands**, not claimed-passed results here:
 
 ```sh
 nix develop
@@ -28,7 +26,25 @@ make plan-sample-aarch64
 make sample-aarch64
 make inspect-sample-aarch64
 make smoke-sample-aarch64
+make smoke-pic-aarch64
 ```
 
-Acceptance is two dom0less guests reaching Linux (`Linux version` appears at least twice).
-Do not call v6 boot-validated until that succeeds.
+## Required AArch64 acceptance
+
+`make smoke-sample-aarch64` must observe:
+
+```text
+xloader: domains 2
+xloader: entering Xen
+(XEN) ...
+guest0: xloader sample userspace reached
+guest1: xloader sample userspace reached
+```
+
+`make smoke-pic-aarch64` must boot the relocated bundle built from the exact same `xloader-aarch64.elf` and observe both guest userspace markers again.
+
+## Passthrough acceptance level
+
+The v7 runtime creates `multiboot,device-tree` partial FDT modules from configured host-DT paths. The implementation intentionally rejects common external-phandle properties instead of attempting dependency closure.
+
+Hardware resource assignment itself is **not yet claimed**: MMIO host/guest mappings (`xen,reg`), IOMMU ownership, IRQ assignment policy, and force-assignment semantics are deferred to the next passthrough milestone.

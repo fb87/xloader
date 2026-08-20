@@ -1,4 +1,4 @@
-# xloader v7 bootable QEMU/AArch64 sample.
+# xloader v7 relocated PIC acceptance sample.
 #
 # Prepare its stable input links and initramfs with:
 #   make prepare-sample-aarch64
@@ -9,7 +9,7 @@
 format = 1
 
 [bundle]
-output = "build/qemu-aarch64.xbundle.elf"
+output = "build/qemu-aarch64-relocated.xbundle.elf"
 
 [platform]
 arch = "aarch64"
@@ -23,8 +23,8 @@ cmdline = "console=dtuart dtuart=serial0 conswitch=ax"
 
 # Placement is a host-side policy. xloader itself is linked position-independently.
 [layout]
-loader_base = "0x40200000"
-xen_base = "0x40600000"
+loader_base = "0x42080000"
+xen_base = "0x42400000"
 payload_alignment = "2M"
 
 [[domain]]

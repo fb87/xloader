@@ -37,7 +37,7 @@ $(BUILD)/libfdt-aarch64.a: | $(BUILD) check-env
 	@rm -rf $(BUILD)/libfdt-aarch64
 	@mkdir -p $(BUILD)/libfdt-aarch64
 	@set -eu; \
-	for src in $(LIBFDT_SRC)/fdt.c $(LIBFDT_SRC)/fdt_ro.c $(LIBFDT_SRC)/fdt_rw.c $(LIBFDT_SRC)/fdt_wip.c; do \
+	for src in $(LIBFDT_SRC)/fdt.c $(LIBFDT_SRC)/fdt_ro.c $(LIBFDT_SRC)/fdt_rw.c $(LIBFDT_SRC)/fdt_wip.c $(LIBFDT_SRC)/fdt_sw.c $(LIBFDT_SRC)/fdt_empty_tree.c; do \
 		name=$$(basename "$$src" .c); \
 		$(ZIG) cc -target aarch64-freestanding-none \
 			-ffreestanding -fno-builtin -fno-stack-protector -fPIC -fno-sanitize=undefined \
@@ -154,10 +154,11 @@ sample-aarch64: prepare-sample-aarch64
 inspect-sample-aarch64: sample-aarch64
 	file $(BUILD)/qemu-aarch64.xbundle.elf
 	readelf -h -l $(BUILD)/qemu-aarch64.xbundle.elf
+	$(BUILD)/xbundle inspect $(BUILD)/qemu-aarch64.xbundle.elf
 
 smoke-sample-aarch64: sample-aarch64
 	@rm -f $(BUILD)/sample-aarch64.log
-	@timeout 18s qemu-system-aarch64 \
+	@timeout 45s qemu-system-aarch64 \
 		-machine virt,virtualization=on -cpu cortex-a57 -m 1G \
 		-kernel $(BUILD)/qemu-aarch64.xbundle.elf \
 		-nographic -no-reboot \
@@ -165,5 +166,25 @@ smoke-sample-aarch64: sample-aarch64
 	@grep -q "xloader: domains 2" $(BUILD)/sample-aarch64.log
 	@grep -q "xloader: entering Xen" $(BUILD)/sample-aarch64.log
 	@grep -q "(XEN)" $(BUILD)/sample-aarch64.log
-	@test "$$(grep -c 'Linux version' $(BUILD)/sample-aarch64.log || true)" -ge 2
-	@echo "PASS: aarch64 TOML bundle -> Xen -> two dom0less Linux guests"
+	@grep -q "guest0: xloader sample userspace reached" $(BUILD)/sample-aarch64.log
+	@grep -q "guest1: xloader sample userspace reached" $(BUILD)/sample-aarch64.log
+	@echo "PASS: aarch64 TOML bundle -> Xen -> two named dom0less Linux userspaces"
+
+
+.PHONY: sample-aarch64-relocated smoke-pic-aarch64
+
+sample-aarch64-relocated: prepare-sample-aarch64
+	$(BUILD)/xbundle build configs/qemu-aarch64-relocated.toml
+
+smoke-pic-aarch64: sample-aarch64 sample-aarch64-relocated
+	@sha256sum $(BUILD)/xloader-aarch64.elf > $(BUILD)/xloader-pic.sha256
+	@rm -f $(BUILD)/sample-aarch64-relocated.log
+	@timeout 45s qemu-system-aarch64 \
+		-machine virt,virtualization=on -cpu cortex-a57 -m 1G \
+		-kernel $(BUILD)/qemu-aarch64-relocated.xbundle.elf \
+		-nographic -no-reboot \
+		>$(BUILD)/sample-aarch64-relocated.log 2>&1 || true
+	@grep -q "xloader: entering Xen" $(BUILD)/sample-aarch64-relocated.log
+	@grep -q "guest0: xloader sample userspace reached" $(BUILD)/sample-aarch64-relocated.log
+	@grep -q "guest1: xloader sample userspace reached" $(BUILD)/sample-aarch64-relocated.log
+	@echo "PASS: identical PIC xloader boots from alternate bundle placement"

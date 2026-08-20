@@ -19,7 +19,13 @@ cat > "$root/init" <<'EOF'
 /bin/busybox --install -s /bin
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
-echo "xloader sample guest: userspace reached"
+domain=unknown
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        xloader.domain=*) domain=${arg#xloader.domain=} ;;
+    esac
+done
+echo "$domain: xloader sample userspace reached"
 exec /bin/sh
 EOF
 chmod +x "$root/init"

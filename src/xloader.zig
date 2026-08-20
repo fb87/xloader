@@ -7,6 +7,7 @@ comptime { _ = minic; }
 const pl011_base: usize = 0x0900_0000;
 const kernel_compatible = "multiboot,kernel\x00multiboot,module\x00";
 const ramdisk_compatible = "multiboot,ramdisk\x00multiboot,module\x00";
+const devicetree_compatible = "multiboot,device-tree\x00multiboot,module\x00";
 
 extern fn arch_console_putc(ch: u8) void;
 extern fn arch_enter_xen(entry: usize, dtb: usize) noreturn;
@@ -35,10 +36,18 @@ pub export var xbundle_storage: abi.Storage linksection(".xbundle") = .{
 };
 
 var dtb_workspace_words: [dt.workspace_size / @sizeOf(u64)]u64 = undefined;
+var passthrough_workspace_words: [(abi.sanity_max_domains * dt.passthrough_slot_size) / @sizeOf(u64)]u64 = undefined;
 
 fn dtbWorkspace() []u8 {
     const ptr: [*]u8 = @ptrCast(&dtb_workspace_words);
     return ptr[0..dt.workspace_size];
+}
+
+fn passthroughSlot(index: usize) []u8 {
+    if (index >= abi.sanity_max_domains) panicMessage("passthrough slot index out of range");
+    const ptr: [*]u8 = @ptrCast(&passthrough_workspace_words);
+    const start = index * dt.passthrough_slot_size;
+    return ptr[start .. start + dt.passthrough_slot_size];
 }
 
 fn putc(ch: u8) void {
@@ -164,7 +173,11 @@ fn makeDomuName(index: usize, buf: *[16]u8) [*:0]const u8 {
     return @ptrCast(buf);
 }
 
-fn validatePassthroughPaths(tree: *dt.DeviceTree, b: *const abi.Header, d: *const abi.Domain, domain_name: [*:0]const u8) void {
+fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize, domain_name: [*:0]const u8) void {
+    if (d.passthrough_count == 0) return;
+    if (d.passthrough_count > abi.sanity_max_passthrough) panicMessage("invalid passthrough count");
+
+    var paths: [abi.sanity_max_passthrough][*:0]const u8 = undefined;
     var i: usize = 0;
     while (i < d.passthrough_count) : (i += 1) {
         const item = passthroughAt(b, d.passthrough_offset, i);
@@ -177,17 +190,39 @@ fn validatePassthroughPaths(tree: *dt.DeviceTree, b: *const abi.Header, d: *cons
             puts("\n");
             panicMessage("invalid passthrough FDT path");
         };
-        puts("xloader: passthrough request ");
+        paths[i] = path;
+        puts("xloader: passthrough ");
         putsZ(domain_name);
         puts(" <- ");
         putsZ(path);
         puts("\n");
     }
+
+    const partial = tree.buildPassthroughTree(paths[0..d.passthrough_count], passthroughSlot(index)) catch |err| switch (err) {
+        error.ExternalDependency => panicMessage("passthrough subtree has unsupported external phandle dependency"),
+        error.NoSpace => panicMessage("passthrough partial DT exceeds per-domain workspace"),
+        else => panicMessage("cannot build passthrough partial DT"),
+    };
+    const partial_addr = @intFromPtr(partial.ptr);
+    if (partial_addr > 0xffff_ffff or partial.len > 0xffff_ffff)
+        panicMessage("passthrough partial DT must be below 4 GiB in v7");
+
+    const module = tree.addNode(domu, "module@2") catch panicMessage("cannot create passthrough DT module");
+    tree.setBytes(module, "compatible", devicetree_compatible) catch panicMessage("cannot set passthrough module compatible");
+    tree.setU32Pair(module, "reg", @intCast(partial_addr), @intCast(partial.len)) catch panicMessage("cannot set passthrough module reg");
+
+    puts("xloader: passthrough DT ");
+    putsZ(domain_name);
+    puts(" @ ");
+    putHex(partial_addr);
+    puts(" size ");
+    putHex(partial.len);
+    puts("\n");
 }
 
 fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize) void {
     if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
-    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v6");
+    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v7");
     if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
     if (d.vcpus == 0) panicMessage("invalid DomU vCPU count");
 
@@ -207,19 +242,19 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
     tree.setString(kernel, "bootargs", stringAt(b, d.cmdline_offset)) catch panicMessage("cannot set kernel bootargs");
 
     if ((d.flags & abi.domain_flag_has_initrd) != 0) {
-        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v6");
+        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v7");
         const ramdisk = tree.addNode(domu, "module@1") catch panicMessage("cannot create initrd module");
         tree.setBytes(ramdisk, "compatible", ramdisk_compatible) catch panicMessage("cannot set initrd compatible");
         tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
     }
 
-    validatePassthroughPaths(tree, b, d, stringAt(b, d.name_offset));
+    addPassthroughModule(tree, domu, b, d, index, stringAt(b, d.name_offset));
 }
 
 fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
     var tree = dt.DeviceTree.openInto(source_dtb, dtbWorkspace()) catch panicMessage("cannot open machine DTB with libfdt");
     const chosen = tree.ensureChosen() catch panicMessage("cannot create /chosen");
-    tree.setString(chosen, "xloader,stage", "v6") catch panicMessage("cannot set xloader DT marker");
+    tree.setString(chosen, "xloader,stage", "v7") catch panicMessage("cannot set xloader DT marker");
     tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
 
     var i: usize = 0;
@@ -264,8 +299,7 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
     switch (builtin.cpu.arch) {
         .aarch64 => {
             puts("xloader: hello from position-independent aarch64 Zig core\n");
-            const dtb = selectArmDtb(boot_info, boot_magic);
-            armBootXen(dtb);
+            armBootXen(selectArmDtb(boot_info, boot_magic));
         },
         .x86_64 => {
             puts("xloader: hello from x86_64 Zig core\n");
@@ -274,7 +308,7 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
             puts(" magic ");
             putHex(boot_magic);
             puts("\n");
-            if (xbundle_storage.header.validBasic()) puts("xloader: v6 descriptor present; x86 Xen handoff deferred\n")
+            if (xbundle_storage.header.validBasic()) puts("xloader: v7 descriptor present; x86 Xen handoff deferred\n")
             else puts("xloader: no bundle descriptor\n");
         },
         else => unreachable,

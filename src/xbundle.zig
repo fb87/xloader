@@ -19,6 +19,7 @@ const usage =
     \\  xbundle check <system.toml>
     \\  xbundle plan <system.toml>
     \\  xbundle build <system.toml> [-o <output.elf>]
+    \\  xbundle inspect <bundle.elf>
     \\
 ;
 
@@ -284,6 +285,12 @@ pub fn main(init: std.process.Init) !void {
         elf.printLoads();
         return;
     }
+    if (std.mem.eql(u8, args[1], "inspect")) {
+        if (args.len != 3) fatal("usage: xbundle inspect <bundle.elf>\n", .{});
+        const data = try readFile(io, arena, args[2]);
+        inspectBundle(args[2], data);
+        return;
+    }
 
     var mode: Mode = undefined;
     if (std.mem.eql(u8, args[1], "check")) mode = .check
@@ -321,6 +328,13 @@ fn compileManifest(
     const expected_machine = machineForArch(cfg.platform.arch);
     if (cfg.domain.len == 0) fatal("configuration must contain at least one [[domain]]\n", .{});
     if (cfg.domain.len > abi.sanity_max_domains) fatal("too many domains: {d}\n", .{cfg.domain.len});
+    for (cfg.domain, 0..) |d, i| {
+        var j = i + 1;
+        while (j < cfg.domain.len) : (j += 1) {
+            if (std.mem.eql(u8, d.name, cfg.domain[j].name))
+                fatal("duplicate domain name '{s}'\n", .{d.name});
+        }
+    }
 
     const loader_data = try readFile(io, allocator, cfg.loader.image);
     const xen_data = try readFile(io, allocator, cfg.xen.image);
@@ -329,7 +343,7 @@ fn compileManifest(
     if (loader_in.machine != expected_machine or !xenMachineMatches(xen, expected_machine))
         fatal("manifest architecture '{s}' does not match loader/Xen ELF machine\n", .{cfg.platform.arch});
     if (loader_in.elf_type != ET_DYN)
-        fatal("{s}: xloader must be position-independent ET_DYN in v6\n", .{loader_in.path});
+        fatal("{s}: xloader must be position-independent ET_DYN in v7\n", .{loader_in.path});
 
     const layout_cfg = cfg.layout;
     const loader_base = if (layout_cfg) |l| if (l.loader_base) |s| parseAddress(s) else defaultLoaderBase(expected_machine) else defaultLoaderBase(expected_machine);
@@ -443,10 +457,35 @@ fn validateArm64LinuxImage(name: []const u8, data: []const u8) void {
 
 fn validateDomainConfig(d: manifest.DomainConfig, index: usize) void {
     if (d.name.len == 0) fatal("domain[{d}]: name must not be empty\n", .{index});
+    if (d.name.len > 63) fatal("domain '{s}': name exceeds 63 bytes\n", .{d.name});
     if (d.vcpus == 0 or d.vcpus > 256) fatal("domain '{s}': invalid vcpus={d}\n", .{ d.name, d.vcpus });
-    for (d.passthrough) |pt| {
-        if (pt.path.len == 0 or pt.path[0] != '/') fatal("domain '{s}': passthrough path must be absolute: {s}\n", .{ d.name, pt.path });
+    for (d.passthrough, 0..) |pt, i| {
+        validatePassthroughPath(d.name, pt.path);
+        var j = i + 1;
+        while (j < d.passthrough.len) : (j += 1) {
+            if (std.mem.eql(u8, pt.path, d.passthrough[j].path))
+                fatal("domain '{s}': duplicate passthrough path {s}\n", .{ d.name, pt.path });
+        }
     }
+}
+
+fn validatePassthroughPath(domain_name: []const u8, path: []const u8) void {
+    if (path.len < 2 or path[0] != '/')
+        fatal("domain '{s}': passthrough path must be absolute: {s}\n", .{ domain_name, path });
+    if (path.len > 255)
+        fatal("domain '{s}': passthrough path exceeds 255 bytes: {s}\n", .{ domain_name, path });
+    var segment_len: usize = 0;
+    for (path[1..]) |ch| {
+        if (ch == '/') {
+            if (segment_len == 0) fatal("domain '{s}': invalid passthrough path: {s}\n", .{ domain_name, path });
+            if (segment_len > 127) fatal("domain '{s}': passthrough path segment exceeds 127 bytes: {s}\n", .{ domain_name, path });
+            segment_len = 0;
+        } else {
+            segment_len += 1;
+        }
+    }
+    if (segment_len == 0 or segment_len > 127)
+        fatal("domain '{s}': invalid passthrough path: {s}\n", .{ domain_name, path });
 }
 
 fn buildCombined(
@@ -710,6 +749,103 @@ fn writeProgramHeader(out: []u8, idx: usize, seg: OutSeg) void {
     writeU64(out, o + 32, seg.filesz);
     writeU64(out, o + 40, seg.memsz);
     writeU64(out, o + 48, seg.alignment);
+}
+
+fn inspectBundle(path: []const u8, data: []const u8) void {
+    const elf = Elf64.parse(path, data);
+    const desc = findBundleDescriptor(elf) orelse fatal("{s}: xbundle descriptor not found in PT_LOAD data\n", .{path});
+    const header_size = readU16(desc, 6);
+    const descriptor_size = readU32(desc, 8);
+    const image_size = readU64(desc, 16);
+    const xen_entry = readU64(desc, 24);
+    const xen_addr = readU64(desc, 32);
+    const xen_size = readU64(desc, 40);
+    const xen_cmdline_offset = readU32(desc, 48);
+    const domain_count = readU32(desc, 52);
+    const domain_offset = readU32(desc, 56);
+    const passthrough_count = readU32(desc, 60);
+    const string_offset = readU32(desc, 68);
+    const string_size = readU32(desc, 72);
+
+    std.debug.print("xbundle inspect: {s}\n", .{path});
+    std.debug.print("  ABI: v{d} header={d} descriptor={d}\n", .{ readU16(desc, 4), header_size, descriptor_size });
+    std.debug.print("  machine: {s} ({d})\n", .{ machineName(elf.machine), elf.machine });
+    std.debug.print("  image bytes: 0x{x}\n", .{image_size});
+    std.debug.print("  Xen: addr=0x{x} size=0x{x} entry=0x{x}\n", .{ xen_addr, xen_size, xen_entry });
+    std.debug.print("  Xen cmdline: {s}\n", .{descriptorString(desc, xen_cmdline_offset)});
+    std.debug.print("  domains: {d}, passthrough paths: {d}\n", .{ domain_count, passthrough_count });
+
+    if (@as(u64, string_offset) + @as(u64, string_size) > @as(u64, descriptor_size))
+        fatal("{s}: invalid descriptor string table\n", .{path});
+    if (domain_count > @as(u32, @intCast(abi.sanity_max_domains))) fatal("{s}: invalid domain count\n", .{path});
+
+    var i: usize = 0;
+    while (i < @as(usize, domain_count)) : (i += 1) {
+        const off = @as(usize, domain_offset) + i * @sizeOf(abi.Domain);
+        if (off + @sizeOf(abi.Domain) > desc.len) fatal("{s}: domain table outside descriptor\n", .{path});
+        const name_offset = readU32(desc, off + 8);
+        const cmdline_offset = readU32(desc, off + 12);
+        const memory_kb = readU64(desc, off + 16);
+        const vcpus = readU32(desc, off + 24);
+        const pt_count = readU32(desc, off + 28);
+        const pt_offset = readU32(desc, off + 32);
+        const kernel_addr = readU64(desc, off + 40);
+        const kernel_size = readU64(desc, off + 48);
+        const initrd_addr = readU64(desc, off + 56);
+        const initrd_size = readU64(desc, off + 64);
+        std.debug.print("  domain[{d}] {s}: memory={d} KiB vcpus={d}\n", .{ i, descriptorString(desc, name_offset), memory_kb, vcpus });
+        std.debug.print("    kernel: 0x{x} +0x{x}\n", .{ kernel_addr, kernel_size });
+        if (initrd_size != 0) std.debug.print("    initrd: 0x{x} +0x{x}\n", .{ initrd_addr, initrd_size });
+        std.debug.print("    cmdline: {s}\n", .{descriptorString(desc, cmdline_offset)});
+        var j: usize = 0;
+        while (j < @as(usize, pt_count)) : (j += 1) {
+            const poff = @as(usize, pt_offset) + j * @sizeOf(abi.Passthrough);
+            if (poff + @sizeOf(abi.Passthrough) > desc.len) fatal("{s}: passthrough table outside descriptor\n", .{path});
+            std.debug.print("    passthrough: {s}\n", .{descriptorString(desc, readU32(desc, poff))});
+        }
+    }
+}
+
+fn findBundleDescriptor(elf: Elf64) ?[]const u8 {
+    var i: usize = 0;
+    while (i < @as(usize, elf.phnum)) : (i += 1) {
+        if (readU32(elf.data, elf.phOffset(i)) != PT_LOAD) continue;
+        const l = elf.loadAt(i);
+        if (l.filesz < @sizeOf(abi.Header)) continue;
+        const start: usize = @intCast(l.offset);
+        const end: usize = @intCast(l.offset + l.filesz);
+        var pos = start;
+        while (pos + @sizeOf(abi.Header) <= end) : (pos += 4) {
+            if (readU32(elf.data, pos) != abi.magic) continue;
+            if (readU16(elf.data, pos + 4) != abi.version) continue;
+            const descriptor_size: usize = @intCast(readU32(elf.data, pos + 8));
+            const header_size: usize = @intCast(readU16(elf.data, pos + 6));
+            if (header_size < @sizeOf(abi.Header) or descriptor_size < header_size or descriptor_size > abi.descriptor_capacity) continue;
+            if (pos + descriptor_size > end) continue;
+            const candidate = elf.data[pos .. pos + descriptor_size];
+            const domains = readU32(candidate, 52);
+            const strings = readU32(candidate, 68);
+            const string_size = readU32(candidate, 72);
+            if (domains > abi.sanity_max_domains) continue;
+            if (@as(u64, strings) + @as(u64, string_size) > @as(u64, @intCast(descriptor_size))) continue;
+            return candidate;
+        }
+    }
+    return null;
+}
+
+fn descriptorString(desc: []const u8, offset: u32) []const u8 {
+    const start: usize = @intCast(offset);
+    if (start >= desc.len) fatal("descriptor string offset outside descriptor\n", .{});
+    const tail = desc[start..];
+    const end = std.mem.indexOfScalar(u8, tail, 0) orelse fatal("unterminated descriptor string\n", .{});
+    return tail[0..end];
+}
+
+fn machineName(machine: u16) []const u8 {
+    if (machine == EM_AARCH64) return "aarch64";
+    if (machine == EM_X86_64) return "x86_64";
+    return "unknown";
 }
 
 fn machineForArch(s: []const u8) u16 {
