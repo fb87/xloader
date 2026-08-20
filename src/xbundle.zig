@@ -150,7 +150,17 @@ fn compileManifest(init: std.process.Init, allocator: std.mem.Allocator, cfg: ma
     for (domains, 0..) |d, i| {
         std.debug.print("  domain[{d}] {s}: kernel=0x{x}+0x{x} memory={d}KiB vcpus={d}\n", .{ i, d.cfg.name, d.kernel_addr, d.kernel.len, d.memory_kb, d.cfg.vcpus });
         if (d.initrd) |r| std.debug.print("    initrd=0x{x}+0x{x}\n", .{ d.initrd_addr, r.len });
-        for (d.cfg.passthrough) |pt| std.debug.print("    passthrough: {s}\n", .{pt.path});
+        for (d.cfg.passthrough) |pt| {
+            const mmio = pt.mmio.?;
+            const host_addr = parseAddress(mmio.host);
+            const guest_addr = if (std.mem.eql(u8, mmio.guest, "same")) host_addr else parseAddress(mmio.guest);
+            const mmio_size = parseSizeOrAddress(mmio.size);
+            std.debug.print("    passthrough: {s} mmio=0x{x}->0x{x}+0x{x}", .{ pt.path, host_addr, guest_addr, mmio_size });
+            if (pt.irq) |irq| std.debug.print(" irq={s}:{d} flags=0x{x}", .{ irq.type, irq.number, irq.flags });
+            if (pt.force_assign_without_iommu) std.debug.print(" force-no-iommu", .{});
+            if (pt.strip_external_dependencies) std.debug.print(" strip-external-deps", .{});
+            std.debug.print("\n", .{});
+        }
     }
 
     if (mode == .check) { std.debug.print("  validation: PASS\n", .{}); return; }
@@ -266,7 +276,32 @@ fn patchDescriptor(dst: []u8, image_size: u64, xen_addr: u64, xen_size: u64, xen
         writeU64(dst, off + 56, d.initrd_addr); writeU64(dst, off + 64, if (d.initrd) |r| @intCast(r.len) else 0);
         for (d.cfg.passthrough) |pt| {
             const poff: usize = @intCast(passthrough_offset + @as(u32, @intCast(pt_index * @sizeOf(abi.Passthrough))));
-            writeU32(dst, poff, putString(dst, &string_cursor, pt.path)); writeU32(dst, poff + 4, 0); pt_index += 1;
+            const mmio = pt.mmio.?;
+            const host_addr = parseAddress(mmio.host);
+            const guest_addr = if (std.mem.eql(u8, mmio.guest, "same")) host_addr else parseAddress(mmio.guest);
+            const mmio_size = parseSizeOrAddress(mmio.size);
+            var pt_flags: u32 = abi.passthrough_flag_has_mmio;
+            if (pt.force_assign_without_iommu) pt_flags |= abi.passthrough_flag_force_assign_without_iommu;
+            if (pt.strip_external_dependencies) pt_flags |= abi.passthrough_flag_strip_external_dependencies;
+            var irq_type: u32 = 0;
+            var irq_number: u32 = 0;
+            var irq_flags: u32 = 0;
+            if (pt.irq) |irq| {
+                pt_flags |= abi.passthrough_flag_has_irq;
+                irq_type = parseIrqType(irq.type);
+                irq_number = irq.number;
+                irq_flags = irq.flags;
+            }
+            writeU32(dst, poff + 0, putString(dst, &string_cursor, pt.path));
+            writeU32(dst, poff + 4, pt_flags);
+            writeU64(dst, poff + 8, host_addr);
+            writeU64(dst, poff + 16, guest_addr);
+            writeU64(dst, poff + 24, mmio_size);
+            writeU32(dst, poff + 32, irq_type);
+            writeU32(dst, poff + 36, irq_number);
+            writeU32(dst, poff + 40, irq_flags);
+            writeU32(dst, poff + 44, 0);
+            pt_index += 1;
         }
     }
     if (@as(usize, string_cursor) > abi.descriptor_capacity) fatal("bundle descriptor exceeds {d} bytes\n", .{abi.descriptor_capacity});
@@ -280,6 +315,17 @@ fn validateDomainConfig(d: manifest.DomainConfig, index: usize, all: []const man
     for (d.passthrough, 0..) |pt, i| {
         validatePassthroughPath(d.name, pt.path);
         for (d.passthrough[0..i]) |other| if (std.mem.eql(u8, pt.path, other.path)) fatal("domain '{s}': duplicate passthrough path {s}\n", .{ d.name, pt.path });
+        const mmio = pt.mmio orelse fatal("domain '{s}': passthrough {s} requires mmio in ABI v5\n", .{ d.name, pt.path });
+        const host_addr = parseAddress(mmio.host);
+        const guest_addr = if (std.mem.eql(u8, mmio.guest, "same")) host_addr else parseAddress(mmio.guest);
+        const mmio_size = parseSizeOrAddress(mmio.size);
+        if (mmio_size == 0) fatal("domain '{s}': passthrough {s} MMIO size must be non-zero\n", .{ d.name, pt.path });
+        _ = checkedEnd(host_addr, mmio_size);
+        _ = checkedEnd(guest_addr, mmio_size);
+        if (pt.irq) |irq| {
+            _ = parseIrqType(irq.type);
+            if (irq.number >= 1020) fatal("domain '{s}': passthrough {s} IRQ number out of range\n", .{ d.name, pt.path });
+        }
     }
 }
 
@@ -292,6 +338,13 @@ fn validateDomainKernel(d: manifest.DomainConfig, data: []const u8, machine: u16
         return;
     }
     fatal("domain '{s}': unsupported kernel_format '{s}'\n", .{ d.name, d.kernel_format });
+}
+
+
+fn parseIrqType(s: []const u8) u32 {
+    if (std.mem.eql(u8, s, "spi")) return abi.irq_type_spi;
+    if (std.mem.eql(u8, s, "ppi")) return abi.irq_type_ppi;
+    fatal("unsupported IRQ type '{s}'; expected spi or ppi\n", .{s});
 }
 
 fn validatePassthroughPath(domain_name: []const u8, path: []const u8) void {
@@ -340,6 +393,17 @@ fn inspectBundle(path: []const u8, data: []const u8) void {
     for (0..@as(usize, domains)) |idx| {
         const off: usize = @intCast(domain_offset + @as(u32, @intCast(idx * @sizeOf(abi.Domain))));
         std.debug.print("  domain[{d}] {s}: memory={d}KiB vcpus={d} kernel=0x{x}+0x{x}\n", .{ idx, descriptorString(d, readU32(d, off + 8)), readU64(d, off + 16), readU32(d, off + 24), readU64(d, off + 40), readU64(d, off + 48) });
+        const pt_count = readU32(d, off + 28);
+        const pt_offset = readU32(d, off + 32);
+        for (0..@as(usize, pt_count)) |pt_idx| {
+            const po: usize = @intCast(pt_offset + @as(u32, @intCast(pt_idx * @sizeOf(abi.Passthrough))));
+            const flags = readU32(d, po + 4);
+            std.debug.print("    passthrough {s}: MMIO 0x{x}->0x{x}+0x{x}", .{ descriptorString(d, readU32(d, po)), readU64(d, po + 8), readU64(d, po + 16), readU64(d, po + 24) });
+            if ((flags & abi.passthrough_flag_has_irq) != 0)
+                std.debug.print(" IRQ type={d} number={d} flags=0x{x}", .{ readU32(d, po + 32), readU32(d, po + 36), readU32(d, po + 40) });
+            if ((flags & abi.passthrough_flag_force_assign_without_iommu) != 0) std.debug.print(" force-no-iommu", .{});
+            std.debug.print("\n", .{});
+        }
     }
 }
 

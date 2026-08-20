@@ -37,6 +37,19 @@ extern fn fdt_get_name(fdt: *const anyopaque, nodeoffset: c_int, lenp: *c_int) ?
 
 pub const Node = struct { offset: c_int };
 
+pub const PassthroughSpec = struct {
+    path: [*:0]const u8,
+    host_addr: u64,
+    guest_addr: u64,
+    size: u64,
+    force_assign_without_iommu: bool,
+    strip_external_dependencies: bool,
+    has_irq: bool,
+    irq_type: u32,
+    irq_number: u32,
+    irq_flags: u32,
+};
+
 pub const DeviceTree = struct {
     buf: []u8,
 
@@ -115,44 +128,70 @@ pub const DeviceTree = struct {
         try self.setBytes(node, name, @as([*]const u8, @ptrCast(&cells))[0..8]);
     }
 
+    pub fn setXenReg(self: *DeviceTree, node: Node, host_addr: u64, size: u64, guest_addr: u64) Error!void {
+        var cells = [6]u32{
+            @byteSwap(@as(u32, @truncate(host_addr >> 32))),
+            @byteSwap(@as(u32, @truncate(host_addr))),
+            @byteSwap(@as(u32, @truncate(size >> 32))),
+            @byteSwap(@as(u32, @truncate(size))),
+            @byteSwap(@as(u32, @truncate(guest_addr >> 32))),
+            @byteSwap(@as(u32, @truncate(guest_addr))),
+        };
+        try self.setBytes(node, "xen,reg", @as([*]const u8, @ptrCast(&cells))[0..24]);
+    }
+
+    pub fn setInterrupt(self: *DeviceTree, node: Node, irq_type: u32, number: u32, flags: u32) Error!void {
+        var cells = [3]u32{ @byteSwap(irq_type), @byteSwap(number), @byteSwap(flags) };
+        try self.setBytes(node, "interrupts", @as([*]const u8, @ptrCast(&cells))[0..12]);
+    }
+
     pub fn setEmpty(self: *DeviceTree, node: Node, name: [*:0]const u8) Error!void {
         try self.setBytes(node, name, &[_]u8{});
     }
 
-    /// Build a trusted partial DT in `dst` using paths from the current host DT.
-    /// Selected paths are recreated below /passthrough so Xen can merge them
-    /// into the guest tree. Common properties that carry external phandle
-    /// dependencies are rejected in v9 rather than silently producing an
-    /// invalid partial tree.
-    pub fn buildPassthroughTree(self: *DeviceTree, paths: []const [*:0]const u8, dst: []u8) Error![]u8 {
+    /// Build a trusted partial DT in `dst` using resource grants compiled
+    /// from system.toml. The selected host subtree supplies the guest-visible
+    /// binding while xen,reg carries the explicit host-MMIO -> guest-IPA map.
+    pub fn buildPassthroughTree(self: *DeviceTree, specs: []const PassthroughSpec, dst: []u8) Error![]u8 {
         var out = try DeviceTree.createEmpty(dst);
         const passthrough = try out.addNode(.{ .offset = 0 }, "passthrough");
 
-        for (paths) |path| {
-            const source = try self.findNode(path);
+        for (specs) |spec| {
+            const source = try self.findNode(spec.path);
+
             var parent = passthrough;
             var cursor: usize = 1; // skip leading '/'
             var name_buf: [128]u8 = undefined;
-            while (path[cursor] != 0) {
-                const start = cursor;
-                while (path[cursor] != 0 and path[cursor] != '/') : (cursor += 1) {}
-                const n = cursor - start;
+            while (spec.path[cursor] != 0) {
+                const component_start = cursor;
+                while (spec.path[cursor] != 0 and spec.path[cursor] != '/') : (cursor += 1) {}
+                const n = cursor - component_start;
                 if (n == 0 or n + 1 > name_buf.len) return error.PathTooLong;
                 var j: usize = 0;
-                while (j < n) : (j += 1) name_buf[j] = path[start + j];
+                while (j < n) : (j += 1) name_buf[j] = spec.path[component_start + j];
                 name_buf[n] = 0;
                 parent = try out.ensureChild(parent, @ptrCast(&name_buf[0]));
-                if (path[cursor] == '/') cursor += 1;
+                if (spec.path[cursor] == '/') cursor += 1;
             }
 
-            try self.copySubtree(source, &out, parent);
+            try self.copySubtree(source, &out, parent, spec.strip_external_dependencies);
+            try out.setXenReg(parent, spec.host_addr, spec.size, spec.guest_addr);
+            if (spec.force_assign_without_iommu)
+                try out.setEmpty(parent, "xen,force-assign-without-iommu");
+            if (spec.has_irq)
+                try out.setInterrupt(parent, spec.irq_type, spec.irq_number, spec.irq_flags);
+
+            // Mark the source machine-DT node only after it has been copied;
+            // libfdt mutations can change later structure-block offsets.
+            const source_again = try self.findNode(spec.path);
+            try self.setEmpty(source_again, "xen,passthrough");
         }
 
         return try out.finish();
     }
 
-    fn copySubtree(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node) Error!void {
-        try self.copyProperties(source, out, dest);
+    fn copySubtree(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
+        try self.copyProperties(source, out, dest, strip_external_dependencies);
 
         var child_off = fdt_first_subnode(@ptrCast(self.buf.ptr), source.offset);
         while (child_off >= 0) {
@@ -160,13 +199,13 @@ pub const DeviceTree = struct {
             const child_name = fdt_get_name(@ptrCast(self.buf.ptr), child_off, &name_len) orelse return error.LibFdt;
             if (name_len <= 0) return error.InvalidTree;
             const out_child = try out.ensureChild(dest, child_name);
-            try self.copySubtree(.{ .offset = child_off }, out, out_child);
+            try self.copySubtree(.{ .offset = child_off }, out, out_child, strip_external_dependencies);
             child_off = fdt_next_subnode(@ptrCast(self.buf.ptr), child_off);
         }
         if (child_off != -FDT_ERR_NOTFOUND) try checkRc(child_off);
     }
 
-    fn copyProperties(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node) Error!void {
+    fn copyProperties(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
         var prop_off = fdt_first_property_offset(@ptrCast(self.buf.ptr), source.offset);
         while (prop_off >= 0) {
             var prop_name: ?[*:0]const u8 = null;
@@ -174,9 +213,12 @@ pub const DeviceTree = struct {
             const prop = fdt_getprop_by_offset(@ptrCast(self.buf.ptr), prop_off, &prop_name, &prop_len) orelse return error.LibFdt;
             if (prop_len < 0 or prop_name == null) return error.LibFdt;
             const name = prop_name.?;
-            if (hasUnsupportedExternalDependency(name)) return error.ExternalDependency;
-            const bytes = @as([*]const u8, @ptrCast(prop))[0..@intCast(prop_len)];
-            try out.setBytes(dest, name, bytes);
+            if (hasUnsupportedExternalDependency(name)) {
+                if (!strip_external_dependencies) return error.ExternalDependency;
+            } else {
+                const bytes = @as([*]const u8, @ptrCast(prop))[0..@intCast(prop_len)];
+                try out.setBytes(dest, name, bytes);
+            }
             prop_off = fdt_next_property_offset(@ptrCast(self.buf.ptr), prop_off);
         }
         if (prop_off != -FDT_ERR_NOTFOUND) try checkRc(prop_off);
@@ -195,6 +237,7 @@ var empty_byte: u8 = 0;
 fn hasUnsupportedExternalDependency(name: [*:0]const u8) bool {
     const unsupported = [_][*:0]const u8{
         "clocks",
+        "clock-names",
         "resets",
         "power-domains",
         "iommus",

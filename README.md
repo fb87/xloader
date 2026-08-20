@@ -1,143 +1,141 @@
-# xloader v9
+# xloader v10
 
-`xloader` packages a statically described Xen system into one bootable ELF.
-The runtime loader is small and position independent; the host-side system
-compiler is `xbundle`.
+`xloader` packages a small position-independent loader, Xen, and static DomU
+payloads into a single ELF image. The host pipeline is Nix-native and the
+system definition is TOML.
 
-v9 makes the development and image-construction pipeline **Nix-native**. There
-are no repository shell scripts and no Makefile orchestration. Nix derivations
-own compilation, ELF-to-raw normalization, initramfs generation, manifest
-materialization, bundle construction, inspection, and QEMU acceptance checks.
+v10 focuses on **functional Arm dom0less device passthrough**. Passthrough is
+no longer just a host-FDT path: every grant carries explicit MMIO and optional
+GIC interrupt resources in the bundle ABI.
 
-See [`docs/design.md`](docs/design.md) for the canonical architecture.
+## Architecture
 
-## Development environment
-
-```bash
-nix develop
+```text
+Nix store inputs
+  xloader ELF -> normalize -> xloader.bin + meta.toml
+  Xen ELF     -> normalize -> xen.bin     + meta.toml
+  Linux Image ---------------------------+
+  initramfs -----------------------------+
+                                          |
+                                  system.toml
+                                          |
+                                      xbundle
+                                          |
+                                 system.xbundle.elf
+                                          |
+                                  QEMU / firmware
+                                          |
+                                       xloader
+                                          |
+                           machine DT -> Xen launch DT
+                                          |
+                                         Xen
+                                     /          \
+                                  guest0       guest1
+                              PL031 passthrough
 ```
 
-The flake is pinned to `nixos-26.05-small`.
+`xbundle` does not parse input ELF files. ELF normalization is a Nix build
+stage; the packer consumes raw images plus metadata and emits one final ELF.
 
-## Build individual components
+## Passthrough manifest
+
+The bootable QEMU sample passes the `virt` machine PL031 RTC to `guest0`:
+
+```toml
+[[domain.passthrough]]
+path = "/pl031@9010000"
+force_assign_without_iommu = true
+strip_external_dependencies = true
+mmio = { host = "0x09010000", guest = "same", size = "4K" }
+irq = { type = "spi", number = 2, flags = 4 }
+```
+
+v10 supports one explicit MMIO range and one optional GIC IRQ per passthrough
+node. The ABI is versioned so this can become variable resource tables later.
+
+At runtime xloader:
+
+1. locates the selected node in the actual machine DT;
+2. copies it into a per-domain partial DT;
+3. emits `xen,reg` from the explicit MMIO grant;
+4. emits/overrides `interrupts` when an IRQ is configured;
+5. emits `xen,force-assign-without-iommu` only when explicitly requested;
+6. marks the source machine node `xen,passthrough`;
+7. attaches the partial DT as `multiboot,device-tree` to the static DomU.
+
+`strip_external_dependencies = true` removes known external phandle
+properties such as clocks, resets, IOMMU links, and power domains. The default
+is `false`, which fails instead of silently creating an invalid partial DT.
+
+## QEMU passthrough acceptance
+
+The sample uses PL031 because it has a small MMIO aperture and a single SPI.
+The sample initramfs tests both paths independently:
+
+```text
+guest0: passthrough pl031 MMIO PASS
+guest0: passthrough pl031 IRQ PASS
+```
+
+MMIO is checked with BusyBox `devmem`. IRQ delivery is checked by arming the
+Linux PL031 RTC wake alarm and verifying that its `/proc/interrupts` count
+increases. If the cached Nix kernel provides PL031 as a module, the Nix
+initramfs derivation extracts the matching `rtc-pl031.ko`; the Linux kernel is
+still not rebuilt.
+
+The QEMU sample intentionally uses `force_assign_without_iommu = true`
+because the emulated sysbus PL031 is not protected by an SMMU. This is a test
+policy and is not a default for real DMA-capable devices.
+
+## Build
+
+The project is pinned to `nixos-26.05-small`.
 
 ```bash
+nix flake lock
+
 nix build .#xbundle
 nix build .#xloader-aarch64
-nix build .#xloader-x86_64
-```
-
-The target loader ELFs are build intermediates. `xbundle` never parses them.
-Nix normalizes executable components into raw bytes plus metadata:
-
-```bash
-nix build .#xloader-aarch64-raw
-nix build .#xen-aarch64-raw
-```
-
-Each normalized output contains:
-
-```text
-result/
-├── image.bin
-└── meta.toml
-```
-
-## Bootable AArch64 sample
-
-The checked-in human-readable template is:
-
-```text
-configs/qemu-aarch64.toml.in
-```
-
-Nix substitutes exact store paths for the loader, Xen, Linux `Image`, and
-initramfs to create the concrete bootable manifest:
-
-```bash
 nix build .#sample-config-aarch64
-cat result
-```
-
-Build the final system image:
-
-```bash
 nix build .#sample-bundle-aarch64
 ```
 
-The output contains:
+Inspect the compiled grant:
 
-```text
-result/
-├── system.xbundle.elf
-├── check.txt
-├── plan.txt
-├── inspect.txt
-├── file.txt
-└── readelf.txt
+```bash
+cat result/inspect.txt
 ```
 
-Run the full Xen + two-DomU acceptance as a Nix derivation:
+Run the basic system smoke test:
 
 ```bash
 nix build .#smoke-sample-aarch64
-cat result/system.log
 ```
 
-Acceptance requires both guests to reach their static `/init`:
-
-```text
-guest0: xloader sample userspace reached
-guest1: xloader sample userspace reached
-```
-
-## Position-independence acceptance
-
-The relocated sample uses the exact same normalized `xloader.bin` but a
-different loader base:
+Run the dedicated passthrough acceptance test:
 
 ```bash
-nix build .#sample-bundle-aarch64-relocated
+nix build .#smoke-passthrough-aarch64
+```
+
+Run the PIC placement test:
+
+```bash
 nix build .#smoke-pic-aarch64
 ```
 
-## Loader-only smoke tests
+## Important v10 limitation
 
-```bash
-nix build .#smoke-loader-aarch64
-nix build .#smoke-loader-x86_64
-```
-
-The x86_64 smoke derivation creates its GRUB ISO entirely inside Nix.
-
-## Flake validation
-
-```bash
-nix flake check
-```
-
-The default checks build `xbundle`, both loader architectures, both loader
-smokes, and the AArch64 sample bundle. The longer full Xen/Linux smoke remains
-an explicit package so normal `nix flake check` does not always boot two VMs.
-
-## Raw-input architecture
-
-The core pipeline is:
+The passthrough implementation currently models:
 
 ```text
-xloader ELF ──Nix normalize──> xloader.bin + meta.toml
-Xen ELF    ──Nix normalize──> xen.bin     + meta.toml
-Linux Image ─────────────────> raw Image
-initramfs  ──Nix derivation─> raw cpio
-                                  │
-                                  v
-                         concrete system.toml
-                                  │
-                                  v
-                               xbundle
-                                  │
-                                  v
-                         system.xbundle.elf
+one DT node
+  + one MMIO range
+  + zero/one GIC interrupt
 ```
 
-There is deliberately no generic ELF parser in `xbundle`.
+It does not yet model multiple MMIO BARs, multiple interrupts, DMA/IOMMU
+stream IDs, MSI, clocks/resets as assigned resources, or automatic phandle
+dependency closure. Those should be explicit future ABI resource tables rather
+than inferred silently from the host DT.

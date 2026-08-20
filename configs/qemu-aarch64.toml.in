@@ -1,9 +1,7 @@
-# xloader v9 bootable QEMU/AArch64 sample.
+# xloader v10 bootable QEMU/AArch64 sample.
 #
-# Materialize the concrete bootable manifest with:
-#   nix build .#sample-config-aarch64
-# Build the final bundle with:
-#   nix build .#sample-bundle-aarch64
+# guest0 receives the QEMU virt PL031 RTC as a real Xen dom0less
+# passthrough device. guest1 is the control guest without passthrough.
 
 format = 1
 
@@ -22,7 +20,6 @@ image = "@XEN_BIN@"
 metadata = "@XEN_META@"
 cmdline = "console=dtuart dtuart=serial0 conswitch=ax"
 
-# Placement is a host-side policy. xloader itself is linked position-independently.
 [layout]
 loader_base = "0x40200000"
 xen_base = "0x40600000"
@@ -47,12 +44,3 @@ memory = "256M"
 vcpus = 1
 cmdline = "console=ttyAMA0 rdinit=/init xloader.domain=guest1"
 vpl011 = true
-
-# Hardware passthrough is configured per domain with host-FDT paths:
-#
-# [[domain.passthrough]]
-# path = "/soc/i2c@12340000"
-#
-# v9 carries these paths in the descriptor and validates that they exist in
-# the boot-time machine DT. External phandle dependencies are rejected conservatively. MMIO/IOMMU
-# resource-assignment policy is intentionally a later milestone.

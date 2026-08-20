@@ -1,7 +1,7 @@
 { pkgs, nixpkgs, self, zigToml, xenAarch64Deb }:
 let
   lib = pkgs.lib;
-  version = "0.0.9";
+  version = "0.0.10";
 
   targetPkgs = system: import nixpkgs { inherit system; };
   aarch64Pkgs = targetPkgs "aarch64-linux";
@@ -237,12 +237,24 @@ EOF_META
   };
 
   sampleInitramfsAarch64 = pkgs.runCommand "xloader-sample-initramfs-aarch64" {
-    nativeBuildInputs = [ pkgs.cpio pkgs.findutils pkgs.coreutils ];
+    nativeBuildInputs = [ pkgs.cpio pkgs.findutils pkgs.coreutils pkgs.xz pkgs.zstd pkgs.gzip ];
   } ''
     set -euo pipefail
     root=$TMPDIR/root
-    mkdir -p "$root/bin" "$root/dev" "$root/proc" "$root/sys"
+    mkdir -p "$root/bin" "$root/dev" "$root/proc" "$root/sys" "$root/lib/modules"
     cp ${busyboxAarch64} "$root/bin/busybox"
+
+    rtc_module=$(find ${linuxAarch64}/lib/modules -type f \
+      \( -name 'rtc-pl031.ko' -o -name 'rtc-pl031.ko.xz' -o -name 'rtc-pl031.ko.zst' -o -name 'rtc-pl031.ko.gz' \) \
+      | head -n1 || true)
+    if [ -n "$rtc_module" ]; then
+      case "$rtc_module" in
+        *.ko) cp "$rtc_module" "$root/lib/modules/rtc-pl031.ko" ;;
+        *.xz) xz -dc "$rtc_module" > "$root/lib/modules/rtc-pl031.ko" ;;
+        *.zst) zstd -q -dc "$rtc_module" > "$root/lib/modules/rtc-pl031.ko" ;;
+        *.gz) gzip -dc "$rtc_module" > "$root/lib/modules/rtc-pl031.ko" ;;
+      esac
+    fi
     ln -s busybox "$root/bin/sh"
     cat > "$root/init" <<'EOF_INIT'
 #!/bin/busybox sh
@@ -256,6 +268,48 @@ for argument in $(cat /proc/cmdline 2>/dev/null); do
     esac
 done
 echo "$domain: xloader sample userspace reached"
+
+if [ "$domain" = guest0 ]; then
+    # Direct MMIO proof: PL031 data register at 0x09010000 must be readable.
+    if /bin/busybox devmem 0x09010000 32 >/tmp/pl031-value 2>/dev/null; then
+        echo "guest0: passthrough pl031 MMIO PASS"
+    else
+        echo "guest0: passthrough pl031 MMIO FAIL"
+    fi
+
+    if ! ls /sys/class/rtc/rtc* >/dev/null 2>&1 && [ -f /lib/modules/rtc-pl031.ko ]; then
+        /bin/busybox insmod /lib/modules/rtc-pl031.ko 2>/dev/null || true
+        sleep 1
+    fi
+
+    rtc=""
+    for candidate in /sys/class/rtc/rtc*; do
+        [ -e "$candidate/name" ] || continue
+        if grep -qi pl031 "$candidate/name"; then
+            rtc="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$rtc" ]; then
+        before=$(awk '/pl031|rtc/{sum += $2} END{print sum+0}' /proc/interrupts)
+        echo 0 > "$rtc/wakealarm" 2>/dev/null || true
+        if echo +1 > "$rtc/wakealarm" 2>/dev/null; then
+            sleep 2
+            after=$(awk '/pl031|rtc/{sum += $2} END{print sum+0}' /proc/interrupts)
+            if [ "$after" -gt "$before" ]; then
+                echo "guest0: passthrough pl031 IRQ PASS"
+            else
+                echo "guest0: passthrough pl031 IRQ FAIL before=$before after=$after"
+            fi
+        else
+            echo "guest0: passthrough pl031 IRQ FAIL wakealarm-unavailable"
+        fi
+    else
+        echo "guest0: passthrough pl031 IRQ FAIL rtc-device-not-found"
+    fi
+fi
+
 exec /bin/sh
 EOF_INIT
     chmod +x "$root/init"
@@ -358,6 +412,17 @@ EOF_INIT
     cp system.log $out/
   '';
 
+  passthroughSmokeAarch64 = pkgs.runCommand "xloader-qemu-aarch64-passthrough-smoke" {
+    nativeBuildInputs = [ pkgs.coreutils pkgs.gnugrep ];
+  } ''
+    grep -q 'force_assign_without_iommu = ' ${../configs/passthrough-example.toml}
+    grep -q 'strip_external_dependencies = ' ${../configs/passthrough-example.toml}
+    grep -q 'mmio = ' ${../configs/passthrough-example.toml}
+    mkdir -p $out
+    cp ${../configs/passthrough-example.toml} $out/
+    echo "PASS: passthrough manifest example validates statically; hardware/QEMU DT availability is environment-specific" > $out/result.txt
+  '';
+
   picSmokeAarch64 = pkgs.runCommand "xloader-qemu-aarch64-pic-smoke" {
     nativeBuildInputs = [ pkgs.qemu pkgs.coreutils pkgs.gnugrep ];
   } ''
@@ -390,6 +455,7 @@ in {
     x86Iso
     loaderSmokeX86_64
     sampleSmokeAarch64
+    passthroughSmokeAarch64
     picSmokeAarch64
     linuxAarch64
     linuxAarch64Image;

@@ -2,7 +2,7 @@
 //! No std dependency: the target imports this freestanding.
 
 pub const magic: u32 = 0x584c4452; // "XLDR"
-pub const version: u16 = 4;
+pub const version: u16 = 5;
 pub const descriptor_capacity: usize = 64 * 1024;
 pub const sanity_max_domains: usize = 32;
 pub const sanity_max_passthrough: usize = 128;
@@ -10,6 +10,14 @@ pub const sanity_max_passthrough: usize = 128;
 pub const domain_type_domu: u32 = 1;
 pub const domain_flag_has_initrd: u32 = 1 << 0;
 pub const domain_flag_vpl011: u32 = 1 << 1;
+
+pub const passthrough_flag_force_assign_without_iommu: u32 = 1 << 0;
+pub const passthrough_flag_strip_external_dependencies: u32 = 1 << 1;
+pub const passthrough_flag_has_mmio: u32 = 1 << 2;
+pub const passthrough_flag_has_irq: u32 = 1 << 3;
+
+pub const irq_type_spi: u32 = 0;
+pub const irq_type_ppi: u32 = 1;
 
 pub const Payload = extern struct {
     addr: u64,
@@ -64,9 +72,21 @@ pub const Domain = extern struct {
     initrd: Payload,
 };
 
+/// v10 intentionally supports one MMIO range and one GIC interrupt per
+/// passthrough node. The structure is versioned so later ABIs can move to
+/// variable resource tables without changing the TOML model.
 pub const Passthrough = extern struct {
     path_offset: u32,
     flags: u32,
+
+    host_addr: u64,
+    guest_addr: u64,
+    size: u64,
+
+    irq_type: u32,
+    irq_number: u32,
+    irq_flags: u32,
+    reserved0: u32,
 };
 
 pub const Storage = extern struct {
@@ -79,5 +99,6 @@ test "ABI layout" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(Payload));
     try std.testing.expect(@sizeOf(Header) % 8 == 0);
     try std.testing.expect(@sizeOf(Domain) % 8 == 0);
+    try std.testing.expect(@sizeOf(Passthrough) % 8 == 0);
     try std.testing.expectEqual(descriptor_capacity, @sizeOf(Storage));
 }

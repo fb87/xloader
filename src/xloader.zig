@@ -177,7 +177,7 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
     if (d.passthrough_count == 0) return;
     if (d.passthrough_count > abi.sanity_max_passthrough) panicMessage("invalid passthrough count");
 
-    var paths: [abi.sanity_max_passthrough][*:0]const u8 = undefined;
+    var specs: [abi.sanity_max_passthrough]dt.PassthroughSpec = undefined;
     var i: usize = 0;
     while (i < d.passthrough_count) : (i += 1) {
         const item = passthroughAt(b, d.passthrough_offset, i);
@@ -190,22 +190,47 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
             puts("\n");
             panicMessage("invalid passthrough FDT path");
         };
-        paths[i] = path;
+        if ((item.flags & abi.passthrough_flag_has_mmio) == 0 or item.size == 0)
+            panicMessage("passthrough resource lacks MMIO grant");
+
+        specs[i] = .{
+            .path = path,
+            .host_addr = item.host_addr,
+            .guest_addr = item.guest_addr,
+            .size = item.size,
+            .force_assign_without_iommu = (item.flags & abi.passthrough_flag_force_assign_without_iommu) != 0,
+            .strip_external_dependencies = (item.flags & abi.passthrough_flag_strip_external_dependencies) != 0,
+            .has_irq = (item.flags & abi.passthrough_flag_has_irq) != 0,
+            .irq_type = item.irq_type,
+            .irq_number = item.irq_number,
+            .irq_flags = item.irq_flags,
+        };
+
         puts("xloader: passthrough ");
         putsZ(domain_name);
         puts(" <- ");
         putsZ(path);
+        puts(" MMIO ");
+        putHex(@intCast(item.host_addr));
+        puts(" -> ");
+        putHex(@intCast(item.guest_addr));
+        puts(" size ");
+        putHex(@intCast(item.size));
+        if ((item.flags & abi.passthrough_flag_has_irq) != 0) {
+            puts(" IRQ ");
+            putDec(item.irq_number);
+        }
         puts("\n");
     }
 
-    const partial = tree.buildPassthroughTree(paths[0..d.passthrough_count], passthroughSlot(index)) catch |err| switch (err) {
-        error.ExternalDependency => panicMessage("passthrough subtree has unsupported external phandle dependency"),
+    const partial = tree.buildPassthroughTree(specs[0..d.passthrough_count], passthroughSlot(index)) catch |err| switch (err) {
+        error.ExternalDependency => panicMessage("passthrough subtree has external dependency; opt in to stripping or include dependency"),
         error.NoSpace => panicMessage("passthrough partial DT exceeds per-domain workspace"),
         else => panicMessage("cannot build passthrough partial DT"),
     };
     const partial_addr = @intFromPtr(partial.ptr);
     if (partial_addr > 0xffff_ffff or partial.len > 0xffff_ffff)
-        panicMessage("passthrough partial DT must be below 4 GiB in v9");
+        panicMessage("passthrough partial DT must be below 4 GiB in v10");
 
     const module = tree.addNode(domu, "module@2") catch panicMessage("cannot create passthrough DT module");
     tree.setBytes(module, "compatible", devicetree_compatible) catch panicMessage("cannot set passthrough module compatible");
@@ -222,7 +247,7 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
 
 fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize) void {
     if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
-    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v9");
+    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v10");
     if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
     if (d.vcpus == 0) panicMessage("invalid DomU vCPU count");
 
@@ -242,7 +267,7 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
     tree.setString(kernel, "bootargs", stringAt(b, d.cmdline_offset)) catch panicMessage("cannot set kernel bootargs");
 
     if ((d.flags & abi.domain_flag_has_initrd) != 0) {
-        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v9");
+        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v10");
         const ramdisk = tree.addNode(domu, "module@1") catch panicMessage("cannot create initrd module");
         tree.setBytes(ramdisk, "compatible", ramdisk_compatible) catch panicMessage("cannot set initrd compatible");
         tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
@@ -254,7 +279,7 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
 fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
     var tree = dt.DeviceTree.openInto(source_dtb, dtbWorkspace()) catch panicMessage("cannot open machine DTB with libfdt");
     const chosen = tree.ensureChosen() catch panicMessage("cannot create /chosen");
-    tree.setString(chosen, "xloader,stage", "v9") catch panicMessage("cannot set xloader DT marker");
+    tree.setString(chosen, "xloader,stage", "v10") catch panicMessage("cannot set xloader DT marker");
     tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
 
     var i: usize = 0;
@@ -308,7 +333,7 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
             puts(" magic ");
             putHex(boot_magic);
             puts("\n");
-            if (xbundle_storage.header.validBasic()) puts("xloader: v9 descriptor present; x86 Xen handoff deferred\n")
+            if (xbundle_storage.header.validBasic()) puts("xloader: v10 descriptor present; x86 Xen handoff deferred\n")
             else puts("xloader: no bundle descriptor\n");
         },
         else => unreachable,

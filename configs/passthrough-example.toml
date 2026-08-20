@@ -1,34 +1,10 @@
-# Schema example for a board-specific AArch64 system. Replace paths with real
-# artifacts and real nodes from the board's machine DT before booting.
-format = 1
-
-[bundle]
-output = "build/board.xbundle.elf"
-
-[platform]
-arch = "aarch64"
-
-[loader]
-image = "build/inputs/aarch64/xloader.bin"
-metadata = "build/inputs/aarch64/xloader.meta.toml"
-
-[xen]
-image = "build/inputs/aarch64/xen.bin"
-metadata = "build/inputs/aarch64/xen.meta.toml"
-cmdline = "console=dtuart"
-
-[[domain]]
-name = "driver"
-kernel = "build/inputs/aarch64/linux"
-kernel_format = "linux-image"
-initrd = "build/inputs/aarch64/initramfs.cpio"
-memory = "512M"
-vcpus = 2
-cmdline = "console=ttyAMA0 rdinit=/init"
-vpl011 = true
+# v10 passthrough resource example.
+# This file is illustrative; use configs/qemu-aarch64.toml.in for the
+# executable QEMU acceptance configuration.
 
 [[domain.passthrough]]
 path = "/abba/i2c0"
-
-[[domain.passthrough]]
-path = "/soc/serial@2800000"
+force_assign_without_iommu = false
+strip_external_dependencies = false
+mmio = { host = "0x12340000", guest = "same", size = "4K" }
+irq = { type = "spi", number = 42, flags = 4 }

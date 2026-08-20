@@ -28,8 +28,24 @@ pub const LayoutConfig = struct {
     payload_alignment: []const u8 = "2M",
 };
 
+pub const MmioConfig = struct {
+    host: []const u8,
+    guest: []const u8 = "same",
+    size: []const u8,
+};
+
+pub const IrqConfig = struct {
+    type: []const u8 = "spi",
+    number: u32,
+    flags: u32 = 4,
+};
+
 pub const PassthroughConfig = struct {
     path: []const u8,
+    mmio: ?MmioConfig = null,
+    irq: ?IrqConfig = null,
+    force_assign_without_iommu: bool = false,
+    strip_external_dependencies: bool = false,
 };
 
 pub const DomainConfig = struct {

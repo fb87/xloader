@@ -49,6 +49,7 @@
           smoke-loader-aarch64 = p.loaderSmokeAarch64;
           smoke-loader-x86_64 = p.loaderSmokeX86_64;
           smoke-sample-aarch64 = p.sampleSmokeAarch64;
+          smoke-passthrough-aarch64 = p.passthroughSmokeAarch64;
           smoke-pic-aarch64 = p.picSmokeAarch64;
         });
 
@@ -67,6 +68,7 @@
           loader-smoke-aarch64 = p.loaderSmokeAarch64;
           loader-smoke-x86_64 = p.loaderSmokeX86_64;
           sample-bundle-aarch64 = p.sampleBundleAarch64;
+          passthrough-smoke-aarch64 = p.passthroughSmokeAarch64;
         });
 
       devShells = forAllSystems (system:
@@ -75,12 +77,13 @@
           default = pkgs.mkShell {
             packages = with pkgs; [ nix zig qemu file binutils ];
             shellHook = ''
-              echo "xloader v9 Nix-native development shell"
+              echo "xloader v10 Nix-native development shell"
               echo "Build host tool:        nix build .#xbundle"
               echo "Build AArch64 loader:   nix build .#xloader-aarch64"
               echo "Materialize sample:     nix build .#sample-config-aarch64"
               echo "Build bootable sample:  nix build .#sample-bundle-aarch64"
               echo "Run Xen/Linux smoke:    nix build .#smoke-sample-aarch64"
+              echo "Run passthrough smoke:  nix build .#smoke-passthrough-aarch64"
             '';
           };
         });
