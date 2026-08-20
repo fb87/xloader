@@ -177,7 +177,7 @@ sample-aarch64-relocated: prepare-sample-aarch64
 	$(BUILD)/xbundle build configs/qemu-aarch64-relocated.toml
 
 smoke-pic-aarch64: sample-aarch64 sample-aarch64-relocated
-	@sha256sum $(BUILD)/xloader-aarch64.elf > $(BUILD)/xloader-pic.sha256
+	@sha256sum $(BUILD)/inputs/aarch64/xloader.bin > $(BUILD)/xloader-pic.sha256
 	@rm -f $(BUILD)/sample-aarch64-relocated.log
 	@timeout 45s qemu-system-aarch64 \
 		-machine virt,virtualization=on -cpu cortex-a57 -m 1G \
@@ -187,4 +187,4 @@ smoke-pic-aarch64: sample-aarch64 sample-aarch64-relocated
 	@grep -q "xloader: entering Xen" $(BUILD)/sample-aarch64-relocated.log
 	@grep -q "guest0: xloader sample userspace reached" $(BUILD)/sample-aarch64-relocated.log
 	@grep -q "guest1: xloader sample userspace reached" $(BUILD)/sample-aarch64-relocated.log
-	@echo "PASS: identical PIC xloader boots from alternate bundle placement"
+	@echo "PASS: identical normalized PIC xloader.bin boots from alternate bundle placement"

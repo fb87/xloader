@@ -1,5 +1,8 @@
 # Implementation status
 
+> **Historical note:** This document describes earlier milestones. The canonical v8 architecture is [`design.md`](design.md), which uses raw executable inputs plus metadata sidecars and no ELF input parsing in `xbundle`.
+
+
 ## M0
 
 - architecture entry stubs

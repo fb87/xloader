@@ -1,25 +1,45 @@
-# v7 validation status
+# v8 Validation Status
 
-## Completed in this environment
+## What changed
 
-- PASS: AArch64 entry assembly parses with Clang's AArch64 assembler.
-- PASS: AArch64 Xen-entry assembly parses with Clang's AArch64 assembler.
-- PASS: x86_64 Multiboot/long-mode assembly parses with Clang's x86_64 assembler.
-- PASS: all shell scripts pass `bash -n`.
-- PASS: owned Zig files contain no identifier named `align`.
-- PASS: the prior `boot_magic` pointless-discard regression is not present.
-- PASS: canonical sample contains two distinct domains and distinct `xloader.domain=` identity arguments.
-- PASS: v7 source includes host bundle inspection, duplicate-domain/path validation, and per-domain passthrough partial-DT construction.
+v8 changes the bundle input architecture:
 
-## Not executable in this environment
+- `xbundle` no longer parses xloader or Xen ELF inputs;
+- executable source artifacts are normalized outside xbundle to `*.bin` plus
+  `*.meta.toml`;
+- Linux AArch64 `Image` remains a raw payload;
+- initramfs remains a raw payload;
+- `xbundle` still emits the final bootable ELF directly;
+- `docs/design.md` is the canonical design document.
 
-This runtime does not provide Nix, Zig, QEMU, or the pinned Nix store inputs. Therefore the following are **acceptance commands**, not claimed-passed results here:
+## Checks performed in this environment
 
-```sh
+The available environment does not contain Zig, Nix, or QEMU, therefore full
+build/boot acceptance cannot be claimed here.
+
+Performed successfully:
+
+- shell syntax check for every script;
+- TOML syntax check for all checked-in sample manifests;
+- source check that `src/xbundle.zig` no longer contains the previous generic
+  `Elf64` input parser or `xbundle probe` command;
+- Zig-source check that no identifier uses the reserved word `align`;
+- `normalize-elf.sh` smoke-tested with a locally generated ELF;
+- normalization entry offset translated through the containing `PT_LOAD`;
+- normalization preserves the full PT_LOAD file-backed span even when
+  `objcopy -O binary` trims trailing zero bytes;
+- descriptor symbol offset confirmed to remain inside the padded raw loader;
+- metadata `memory_size` confirmed to cover the raw file plus trailing BSS.
+
+## Required acceptance on a Nix development machine
+
+```bash
 nix develop
+
 make clean
 make all
 make test
+
 make prepare-sample-aarch64
 make check-sample-aarch64
 make plan-sample-aarch64
@@ -29,22 +49,30 @@ make smoke-sample-aarch64
 make smoke-pic-aarch64
 ```
 
-## Required AArch64 acceptance
-
-`make smoke-sample-aarch64` must observe:
+Expected final guest markers:
 
 ```text
-xloader: domains 2
-xloader: entering Xen
-(XEN) ...
 guest0: xloader sample userspace reached
 guest1: xloader sample userspace reached
 ```
 
-`make smoke-pic-aarch64` must boot the relocated bundle built from the exact same `xloader-aarch64.elf` and observe both guest userspace markers again.
+`smoke-pic-aarch64` must build two bundles at different loader bases from the
+same normalized `build/inputs/aarch64/xloader.bin` and boot both.
 
-## Passthrough acceptance level
+## Important normalization invariant
 
-The v7 runtime creates `multiboot,device-tree` partial FDT modules from configured host-DT paths. The implementation intentionally rejects common external-phandle properties instead of attempting dependency closure.
+For a normalized executable:
 
-Hardware resource assignment itself is **not yet claimed**: MMIO host/guest mappings (`xen,reg`), IOMMU ownership, IRQ assignment policy, and force-assignment semantics are deferred to the next passthrough milestone.
+```text
+raw file size <= metadata.memory_size
+entry_offset < metadata.memory_size
+```
+
+For xloader specifically:
+
+```text
+descriptor_offset + 64 KiB <= raw file size
+```
+
+The final bundle ELF uses the raw file size for `p_filesz` and metadata memory
+size for `p_memsz`.

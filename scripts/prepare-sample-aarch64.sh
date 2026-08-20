@@ -6,8 +6,22 @@ mkdir -p build/inputs/aarch64 build/initramfs-aarch64
 eval "$(./scripts/nix-inputs.sh aarch64 env)"
 busybox=$(nix build --no-link --max-jobs 0 --print-out-paths '.#packages.aarch64-linux.busybox-input')/bin/busybox
 
-ln -sfn "$XEN_IMAGE" build/inputs/aarch64/xen
 ln -sfn "$LINUX_IMAGE" build/inputs/aarch64/linux
+
+# Normalize executable inputs once, outside xbundle. xbundle consumes only
+# raw bytes plus metadata sidecars.
+./scripts/normalize-elf.sh \
+  --kind loader --arch aarch64 \
+  --input build/xloader-aarch64.elf \
+  --output build/inputs/aarch64/xloader.bin \
+  --metadata build/inputs/aarch64/xloader.meta.toml \
+  --descriptor-symbol xbundle_storage
+
+./scripts/normalize-elf.sh \
+  --kind xen --arch aarch64 \
+  --input "$XEN_IMAGE" \
+  --output build/inputs/aarch64/xen.bin \
+  --metadata build/inputs/aarch64/xen.meta.toml
 
 root=build/initramfs-aarch64/root
 rm -rf "$root"
@@ -35,4 +49,6 @@ chmod +x "$root/init"
 ) > build/inputs/aarch64/initramfs.cpio
 
 echo "sample inputs prepared:"
-file build/inputs/aarch64/xen build/inputs/aarch64/linux build/inputs/aarch64/initramfs.cpio
+file build/inputs/aarch64/xloader.bin build/inputs/aarch64/xen.bin build/inputs/aarch64/linux build/inputs/aarch64/initramfs.cpio
+cat build/inputs/aarch64/xloader.meta.toml
+cat build/inputs/aarch64/xen.meta.toml

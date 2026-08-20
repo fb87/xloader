@@ -9,10 +9,12 @@ output = "build/board.xbundle.elf"
 arch = "aarch64"
 
 [loader]
-image = "build/xloader-aarch64.elf"
+image = "build/inputs/aarch64/xloader.bin"
+metadata = "build/inputs/aarch64/xloader.meta.toml"
 
 [xen]
-image = "build/inputs/aarch64/xen"
+image = "build/inputs/aarch64/xen.bin"
+metadata = "build/inputs/aarch64/xen.meta.toml"
 cmdline = "console=dtuart"
 
 [[domain]]

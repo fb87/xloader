@@ -1,4 +1,4 @@
-# xloader v7 bootable QEMU/AArch64 sample.
+# xloader v8 bootable QEMU/AArch64 sample.
 #
 # Prepare its stable input links and initramfs with:
 #   make prepare-sample-aarch64
@@ -15,10 +15,12 @@ output = "build/qemu-aarch64.xbundle.elf"
 arch = "aarch64"
 
 [loader]
-image = "build/xloader-aarch64.elf"
+image = "build/inputs/aarch64/xloader.bin"
+metadata = "build/inputs/aarch64/xloader.meta.toml"
 
 [xen]
-image = "build/inputs/aarch64/xen"
+image = "build/inputs/aarch64/xen.bin"
+metadata = "build/inputs/aarch64/xen.meta.toml"
 cmdline = "console=dtuart dtuart=serial0 conswitch=ax"
 
 # Placement is a host-side policy. xloader itself is linked position-independently.
@@ -52,6 +54,6 @@ vpl011 = true
 # [[domain.passthrough]]
 # path = "/soc/i2c@12340000"
 #
-# v7 carries these paths in the descriptor and validates that they exist in
+# v8 carries these paths in the descriptor and validates that they exist in
 # the boot-time machine DT. External phandle dependencies are rejected conservatively. MMIO/IOMMU
 # resource-assignment policy is intentionally a later milestone.

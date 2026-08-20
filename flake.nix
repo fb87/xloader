@@ -79,7 +79,7 @@
         in {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "xloader";
-            version = "0.0.7";
+            version = "0.0.8";
             src = self;
             nativeBuildInputs = with pkgs; [
               zig gnumake file binutils dtc grub2 xorriso qemu cpio
