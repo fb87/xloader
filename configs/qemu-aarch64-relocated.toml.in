@@ -35,6 +35,19 @@ vcpus = 1
 cmdline = "console=ttyAMA0 rdinit=/init xloader.domain=guest0"
 vpl011 = true
 
+# QEMU virt PL031 RTC. QEMU currently exposes it at /pl031@9010000,
+# MMIO 0x09010000..0x09010fff, GIC SPI 2, level-high.
+#
+# QEMU virt does not provide an SMMU for this sysbus device, therefore the
+# sample explicitly opts in to Xen's non-IOMMU test assignment. Do not copy
+# this policy to real DMA-capable hardware.
+[[domain.passthrough]]
+path = "/pl031@9010000"
+force_assign_without_iommu = true
+strip_external_dependencies = true
+mmio = { host = "0x09010000", guest = "same", size = "4K" }
+irq = { type = "spi", number = 2, flags = 4 }
+
 [[domain]]
 name = "guest1"
 kernel = "@LINUX_IMAGE@"

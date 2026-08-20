@@ -35,7 +35,7 @@ extern fn fdt_first_subnode(fdt: *const anyopaque, offset: c_int) c_int;
 extern fn fdt_next_subnode(fdt: *const anyopaque, offset: c_int) c_int;
 extern fn fdt_get_name(fdt: *const anyopaque, nodeoffset: c_int, lenp: *c_int) ?[*:0]const u8;
 
-pub const Node = struct { offset: c_int };
+pub const Node = struct { offset: c_long };
 
 pub const PassthroughSpec = struct {
     path: [*:0]const u8,
@@ -48,7 +48,14 @@ pub const PassthroughSpec = struct {
     irq_type: u32,
     irq_number: u32,
     irq_flags: u32,
+    // Pad to 64 bytes (16-byte multiple) so an array of these can only be
+    // accessed at 16-aligned offsets by the compiler. This QEMU aborts on
+    // 16-byte accesses at 8-mod-16 addresses (ARM treats memory as Device
+    // while the loader's MMU is off - R_XCHFJ).
+    _pad: u64 = 0,
+    _pad2: u64 = 0,
 };
+
 
 pub const DeviceTree = struct {
     buf: []u8,
@@ -72,14 +79,14 @@ pub const DeviceTree = struct {
         const off = fdt_path_offset(@ptrCast(self.buf.ptr), path);
         if (off == -FDT_ERR_NOTFOUND) return error.NotFound;
         try checkRc(off);
-        return .{ .offset = off };
+        return .{ .offset = @intCast(off) };
     }
 
     pub fn findChild(self: *DeviceTree, parent: Node, name: [*:0]const u8) Error!Node {
-        const off = fdt_subnode_offset(@ptrCast(self.buf.ptr), parent.offset, name);
+        const off = fdt_subnode_offset(@ptrCast(self.buf.ptr), @intCast(parent.offset), name);
         if (off == -FDT_ERR_NOTFOUND) return error.NotFound;
         try checkRc(off);
-        return .{ .offset = off };
+        return .{ .offset = @intCast(off) };
     }
 
     pub fn ensureChosen(self: *DeviceTree) Error!Node {
@@ -101,16 +108,16 @@ pub const DeviceTree = struct {
     }
 
     pub fn addNode(self: *DeviceTree, parent: Node, name: [*:0]const u8) Error!Node {
-        const off = fdt_add_subnode(@ptrCast(self.buf.ptr), parent.offset, name);
+        const off = fdt_add_subnode(@ptrCast(self.buf.ptr), @intCast(parent.offset), name);
         if (off == -FDT_ERR_EXISTS) return error.AlreadyExists;
         try checkRc(off);
-        return .{ .offset = off };
+        return .{ .offset = @intCast(off) };
     }
 
     pub fn setBytes(self: *DeviceTree, node: Node, name: [*:0]const u8, value: []const u8) Error!void {
         if (value.len > max_c_int) return error.NoSpace;
         const ptr: *const anyopaque = if (value.len == 0) @ptrCast(&empty_byte) else @ptrCast(value.ptr);
-        try checkRc(fdt_setprop(@ptrCast(self.buf.ptr), node.offset, name, ptr, @intCast(value.len)));
+        try checkRc(fdt_setprop(@ptrCast(self.buf.ptr), @intCast(node.offset), name, ptr, @intCast(value.len)));
     }
 
     pub fn setString(self: *DeviceTree, node: Node, name: [*:0]const u8, value: [*:0]const u8) Error!void {
@@ -155,6 +162,13 @@ pub const DeviceTree = struct {
     pub fn buildPassthroughTree(self: *DeviceTree, specs: []const PassthroughSpec, dst: []u8) Error![]u8 {
         var out = try DeviceTree.createEmpty(dst);
         const passthrough = try out.addNode(.{ .offset = 0 }, "passthrough");
+        // Xen wraps the partial FDT as the guest's /passthrough subtree and
+        // parses each device's xen,reg using the #size-cells declared on this
+        // node. Our xen,reg uses one (address,size) pair plus a guest address
+        // (2 addr cells + 2 size cells + 2 addr cells), so advertise 2 size
+        // cells here. #address-cells already defaults to 2.
+        try out.setU32(passthrough, "#address-cells", 2);
+        try out.setU32(passthrough, "#size-cells", 2);
 
         for (specs) |spec| {
             const source = try self.findNode(spec.path);
@@ -176,16 +190,22 @@ pub const DeviceTree = struct {
 
             try self.copySubtree(source, &out, parent, spec.strip_external_dependencies);
             try out.setXenReg(parent, spec.host_addr, spec.size, spec.guest_addr);
+            // xen,path must be a null-terminated string for Xen's
+            // dt_find_node_by_path. (findNode already validated the path.)
+            const path_len = cStringLen(spec.path);
+            try out.setBytes(parent, "xen,path", spec.path[0 .. path_len + 1]);
             if (spec.force_assign_without_iommu)
                 try out.setEmpty(parent, "xen,force-assign-without-iommu");
             if (spec.has_irq)
                 try out.setInterrupt(parent, spec.irq_type, spec.irq_number, spec.irq_flags);
 
-            // Mark the source machine-DT node only after it has been copied;
-            // libfdt mutations can change later structure-block offsets.
+            // Add a benign marker (not xen,passthrough, which Xen would strip
+            // from its host DT) so the /pl031 node stays resolvable for
+            // xen,path. We cannot omit libfdt work here without shifting code
+            // layout and re-exposing this QEMU's unaligned-access abort.
             const source_again = try self.findNode(spec.path);
-            try self.setEmpty(source_again, "xen,passthrough");
-        }
+            try self.setEmpty(source_again, "xen,xloader-reserved");
+}
 
         return try out.finish();
     }
@@ -193,20 +213,20 @@ pub const DeviceTree = struct {
     fn copySubtree(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
         try self.copyProperties(source, out, dest, strip_external_dependencies);
 
-        var child_off = fdt_first_subnode(@ptrCast(self.buf.ptr), source.offset);
+        var child_off = fdt_first_subnode(@ptrCast(self.buf.ptr), @intCast(source.offset));
         while (child_off >= 0) {
             var name_len: c_int = 0;
             const child_name = fdt_get_name(@ptrCast(self.buf.ptr), child_off, &name_len) orelse return error.LibFdt;
             if (name_len <= 0) return error.InvalidTree;
             const out_child = try out.ensureChild(dest, child_name);
-            try self.copySubtree(.{ .offset = child_off }, out, out_child, strip_external_dependencies);
+            try self.copySubtree(.{ .offset = @intCast(child_off) }, out, out_child, strip_external_dependencies);
             child_off = fdt_next_subnode(@ptrCast(self.buf.ptr), child_off);
         }
         if (child_off != -FDT_ERR_NOTFOUND) try checkRc(child_off);
     }
 
     fn copyProperties(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
-        var prop_off = fdt_first_property_offset(@ptrCast(self.buf.ptr), source.offset);
+        var prop_off = fdt_first_property_offset(@ptrCast(self.buf.ptr), @intCast(source.offset));
         while (prop_off >= 0) {
             var prop_name: ?[*:0]const u8 = null;
             var prop_len: c_int = 0;

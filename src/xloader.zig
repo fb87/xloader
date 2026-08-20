@@ -126,14 +126,14 @@ fn descriptorBase() usize {
     return @intFromPtr(&xbundle_storage);
 }
 
-fn domainAt(b: *const abi.Header, index: usize) *const abi.Domain {
+fn domainAt(b: *const abi.Header, index: usize) *const volatile abi.Domain {
     if (index >= b.domain_count) panicMessage("domain index out of range");
     const off = @as(usize, b.domain_offset) + index * @sizeOf(abi.Domain);
     if (off + @sizeOf(abi.Domain) > b.descriptor_size) panicMessage("domain table outside descriptor");
     return @ptrFromInt(descriptorBase() + off);
 }
 
-fn passthroughAt(b: *const abi.Header, byte_offset: u32, index: usize) *const abi.Passthrough {
+fn passthroughAt(b: *const abi.Header, byte_offset: u32, index: usize) *const volatile abi.Passthrough {
     const off = @as(usize, byte_offset) + index * @sizeOf(abi.Passthrough);
     if (off + @sizeOf(abi.Passthrough) > b.descriptor_size) panicMessage("passthrough table outside descriptor");
     return @ptrFromInt(descriptorBase() + off);
@@ -173,11 +173,42 @@ fn makeDomuName(index: usize, buf: *[16]u8) [*:0]const u8 {
     return @ptrCast(buf);
 }
 
-fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize, domain_name: [*:0]const u8) void {
+fn buildDomuPath(index: usize, buf: *[32]u8) [*:0]const u8 {
+    const chosen = "/chosen/";
+    @memcpy(buf[0..chosen.len], chosen);
+    var p = chosen.len;
+    const suffix = "domU";
+    @memcpy(buf[p .. p + suffix.len], suffix);
+    p += suffix.len;
+    var n = index;
+    var digits: [10]u8 = undefined;
+    var count: usize = 0;
+    if (n == 0) {
+        digits[0] = '0';
+        count = 1;
+    } else {
+        while (n != 0) : (n /= 10) {
+            digits[count] = @intCast('0' + (n % 10));
+            count += 1;
+        }
+    }
+    while (count != 0) {
+        count -= 1;
+        buf[p] = digits[count];
+        p += 1;
+    }
+    buf[p] = 0;
+    return @ptrCast(buf);
+}
+
+fn addPassthroughModule(tree: *dt.DeviceTree, b: *const abi.Header, d: *const volatile abi.Domain, index: usize, domain_name: [*:0]const u8) void {
     if (d.passthrough_count == 0) return;
     if (d.passthrough_count > abi.sanity_max_passthrough) panicMessage("invalid passthrough count");
 
-    var specs: [abi.sanity_max_passthrough]dt.PassthroughSpec = undefined;
+    // The descriptor sits at an 8-mod-16 offset; this QEMU aborts on 16-byte
+    // accesses there, so read item fields as scalars and write the spec copy
+    // through a volatile (aligned) pointer to avoid fused wide accesses.
+    var specs: [abi.sanity_max_passthrough]dt.PassthroughSpec align(16) = undefined;
     var i: usize = 0;
     while (i < d.passthrough_count) : (i += 1) {
         const item = passthroughAt(b, d.passthrough_offset, i);
@@ -193,7 +224,8 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
         if ((item.flags & abi.passthrough_flag_has_mmio) == 0 or item.size == 0)
             panicMessage("passthrough resource lacks MMIO grant");
 
-        specs[i] = .{
+        const sv: *volatile dt.PassthroughSpec = @ptrCast(&specs[i]);
+        sv.* = .{
             .path = path,
             .host_addr = item.host_addr,
             .guest_addr = item.guest_addr,
@@ -232,7 +264,12 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
     if (partial_addr > 0xffff_ffff or partial.len > 0xffff_ffff)
         panicMessage("passthrough partial DT must be below 4 GiB in v10");
 
-    const module = tree.addNode(domu, "module@2") catch panicMessage("cannot create passthrough DT module");
+    // libfdt mutations in buildPassthroughTree can shift later structure-block
+    // offsets, so re-resolve the DomU node before adding module@2.
+    var path_buf: [32]u8 = undefined;
+    const dom_path = buildDomuPath(index, &path_buf);
+    const domu_now = tree.findNode(dom_path) catch panicMessage("cannot re-resolve passthrough DomU node");
+    const module = tree.addNode(domu_now, "module@2") catch panicMessage("cannot create passthrough DT module");
     tree.setBytes(module, "compatible", devicetree_compatible) catch panicMessage("cannot set passthrough module compatible");
     tree.setU32Pair(module, "reg", @intCast(partial_addr), @intCast(partial.len)) catch panicMessage("cannot set passthrough module reg");
 
@@ -245,7 +282,7 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
     puts("\n");
 }
 
-fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize) void {
+fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const volatile abi.Domain, index: usize) void {
     if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
     if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v10");
     if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
@@ -273,7 +310,7 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
         tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
     }
 
-    addPassthroughModule(tree, domu, b, d, index, stringAt(b, d.name_offset));
+    addPassthroughModule(tree, b, d, index, stringAt(b, d.name_offset));
 }
 
 fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
@@ -283,7 +320,12 @@ fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
     tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
 
     var i: usize = 0;
-    while (i < b.domain_count) : (i += 1) addDomu(&tree, chosen, b, domainAt(b, i), i);
+    while (i < b.domain_count) : (i += 1) {
+        // libfdt mutations for domain[i-1] (passthrough marker) can shift later
+        // structure-block offsets, so re-resolve /chosen per domain.
+        const chosen_now = tree.findNode("/chosen") catch panicMessage("cannot re-resolve /chosen");
+        addDomu(&tree, chosen_now, b, domainAt(b, i), i);
+    }
 
     const final_dtb = tree.finish() catch panicMessage("cannot pack prepared DTB");
     puts("xloader: prepared DTB ");

@@ -261,6 +261,9 @@ EOF_META
 /bin/busybox --install -s /bin
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
+mkdir -p /tmp /dev
+/bin/busybox mknod /dev/mem c 1 1 2>/dev/null || true
+/bin/busybox mknod /dev/null c 1 3 2>/dev/null || true
 domain=unknown
 for argument in $(cat /proc/cmdline 2>/dev/null); do
     case "$argument" in
@@ -413,14 +416,19 @@ EOF_INIT
   '';
 
   passthroughSmokeAarch64 = pkgs.runCommand "xloader-qemu-aarch64-passthrough-smoke" {
-    nativeBuildInputs = [ pkgs.coreutils pkgs.gnugrep ];
+    nativeBuildInputs = [ pkgs.qemu pkgs.coreutils pkgs.gnugrep ];
   } ''
-    grep -q 'force_assign_without_iommu = ' ${../configs/passthrough-example.toml}
-    grep -q 'strip_external_dependencies = ' ${../configs/passthrough-example.toml}
-    grep -q 'mmio = ' ${../configs/passthrough-example.toml}
+    timeout 90s qemu-system-aarch64 \
+      -machine virt,virtualization=on -cpu cortex-a57 -m 1G \
+      -kernel ${sampleBundleAarch64}/system.xbundle.elf \
+      -nographic -no-reboot > system.log 2>&1 || true
+    grep -q 'xloader: passthrough guest0 <- /pl031@9010000 MMIO' system.log
+    grep -q 'xloader: passthrough DT guest0' system.log
+    grep -q 'guest0: xloader sample userspace reached' system.log
+    grep -q 'guest0: passthrough pl031 MMIO PASS' system.log
     mkdir -p $out
-    cp ${../configs/passthrough-example.toml} $out/
-    echo "PASS: passthrough manifest example validates statically; hardware/QEMU DT availability is environment-specific" > $out/result.txt
+    cp system.log $out/
+    echo "PASS: loader builds the /passthrough DT and Xen assigns the PL031 MMIO to guest0" > $out/result.txt
   '';
 
   picSmokeAarch64 = pkgs.runCommand "xloader-qemu-aarch64-pic-smoke" {

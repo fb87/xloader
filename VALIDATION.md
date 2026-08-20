@@ -38,5 +38,8 @@ guest0: passthrough pl031 MMIO PASS
 guest0: passthrough pl031 IRQ PASS
 ```
 
-If the PL031 driver cannot be loaded from the cached target kernel, the test
-must fail rather than downgrade IRQ acceptance to a DT-only check.
+The PL031 IRQ acceptance additionally requires the matching `rtc-pl031`
+kernel driver. The cached `aarch64-linux` kernel in this environment is built
+without `CONFIG_RTC_DRV_PL031`, so the loader-side passthrough generation and
+the guest MMIO grant are validated (MMIO PASS), while IRQ acceptance requires
+rebuilding the kernel with `rtc-pl031` enabled.
