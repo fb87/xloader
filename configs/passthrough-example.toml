@@ -1,0 +1,32 @@
+# Schema example for a board-specific AArch64 system. Replace paths with real
+# artifacts and real nodes from the board's machine DT before booting.
+format = 1
+
+[bundle]
+output = "build/board.xbundle.elf"
+
+[platform]
+arch = "aarch64"
+
+[loader]
+image = "build/xloader-aarch64.elf"
+
+[xen]
+image = "build/inputs/aarch64/xen"
+cmdline = "console=dtuart"
+
+[[domain]]
+name = "driver"
+kernel = "build/inputs/aarch64/linux"
+kernel_format = "linux-image"
+initrd = "build/inputs/aarch64/initramfs.cpio"
+memory = "512M"
+vcpus = 2
+cmdline = "console=ttyAMA0 rdinit=/init"
+vpl011 = true
+
+[[domain.passthrough]]
+path = "/abba/i2c0"
+
+[[domain.passthrough]]
+path = "/soc/serial@2800000"

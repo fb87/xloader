@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1787184810,
+        "narHash": "sha256-8Z9Q4Wh/nqdpVSsVvSXxpIJ442CFzLDwfKmWMOsJwts=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "271998520450db38b8c6b40464ea1fdb466db60c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05-small",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "zig-toml": "zig-toml"
+      }
+    },
+    "zig-toml": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1781186310,
+        "narHash": "sha256-MU+zI9Utu7VaLy9hmyhRZXstfAPUjMSblE8SWLmrK6o=",
+        "owner": "sam701",
+        "repo": "zig-toml",
+        "rev": "8685923e32e8b8a795eb2715684236975a70faed",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sam701",
+        "ref": "zig-0.16",
+        "repo": "zig-toml",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

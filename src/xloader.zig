@@ -1,0 +1,283 @@
+const abi = @import("abi/bundle.zig");
+const dt = @import("loader/dt.zig");
+const builtin = @import("builtin");
+const minic = @import("runtime/minic.zig");
+comptime { _ = minic; }
+
+const pl011_base: usize = 0x0900_0000;
+const kernel_compatible = "multiboot,kernel\x00multiboot,module\x00";
+const ramdisk_compatible = "multiboot,ramdisk\x00multiboot,module\x00";
+
+extern fn arch_console_putc(ch: u8) void;
+extern fn arch_enter_xen(entry: usize, dtb: usize) noreturn;
+
+pub export var xbundle_storage: abi.Storage linksection(".xbundle") = .{
+    .header = .{
+        .magic = abi.magic,
+        .version = abi.version,
+        .header_size = @sizeOf(abi.Header),
+        .descriptor_size = @sizeOf(abi.Header),
+        .flags = 0,
+        .image_size = 0,
+        .xen_entry = 0,
+        .xen_addr = 0,
+        .xen_size = 0,
+        .xen_cmdline_offset = 0,
+        .domain_count = 0,
+        .domain_offset = 0,
+        .passthrough_count = 0,
+        .passthrough_offset = 0,
+        .string_offset = 0,
+        .string_size = 0,
+        .reserved0 = 0,
+    },
+    .rest = [_]u8{0} ** (abi.descriptor_capacity - @sizeOf(abi.Header)),
+};
+
+var dtb_workspace_words: [dt.workspace_size / @sizeOf(u64)]u64 = undefined;
+
+fn dtbWorkspace() []u8 {
+    const ptr: [*]u8 = @ptrCast(&dtb_workspace_words);
+    return ptr[0..dt.workspace_size];
+}
+
+fn putc(ch: u8) void {
+    switch (builtin.cpu.arch) {
+        .aarch64 => {
+            const dr: *volatile u8 = @ptrFromInt(pl011_base);
+            dr.* = ch;
+        },
+        .x86_64 => arch_console_putc(ch),
+        else => @compileError("unsupported xloader architecture"),
+    }
+}
+
+fn puts(s: []const u8) void {
+    for (s) |ch| {
+        if (ch == '\n') putc('\r');
+        putc(ch);
+    }
+}
+
+fn putsZ(s: [*:0]const u8) void {
+    var i: usize = 0;
+    while (s[i] != 0) : (i += 1) putc(s[i]);
+}
+
+fn putDec(value: usize) void {
+    var buf: [24]u8 = undefined;
+    var pos: usize = buf.len;
+    var v = value;
+    if (v == 0) {
+        putc('0');
+        return;
+    }
+    while (v != 0) {
+        pos -= 1;
+        buf[pos] = @intCast('0' + (v % 10));
+        v /= 10;
+    }
+    puts(buf[pos..]);
+}
+
+fn putHex(value: usize) void {
+    const digits = "0123456789abcdef";
+    puts("0x");
+    var shift: usize = @bitSizeOf(usize);
+    while (shift != 0) {
+        shift -= 4;
+        const nibble: usize = (value >> @intCast(shift)) & 0xf;
+        putc(digits[nibble]);
+    }
+}
+
+fn halt() noreturn {
+    while (true) {
+        switch (builtin.cpu.arch) {
+            .aarch64 => asm volatile ("wfe"),
+            .x86_64 => asm volatile ("hlt"),
+            else => unreachable,
+        }
+    }
+}
+
+fn panicMessage(msg: []const u8) noreturn {
+    puts("xloader: ERROR: ");
+    puts(msg);
+    puts("\n");
+    halt();
+}
+
+fn bundle() *const abi.Header {
+    if (!xbundle_storage.header.validBasic()) panicMessage("invalid or unpatched xbundle descriptor");
+    return &xbundle_storage.header;
+}
+
+fn descriptorBase() usize {
+    return @intFromPtr(&xbundle_storage);
+}
+
+fn domainAt(b: *const abi.Header, index: usize) *const abi.Domain {
+    if (index >= b.domain_count) panicMessage("domain index out of range");
+    const off = @as(usize, b.domain_offset) + index * @sizeOf(abi.Domain);
+    if (off + @sizeOf(abi.Domain) > b.descriptor_size) panicMessage("domain table outside descriptor");
+    return @ptrFromInt(descriptorBase() + off);
+}
+
+fn passthroughAt(b: *const abi.Header, byte_offset: u32, index: usize) *const abi.Passthrough {
+    const off = @as(usize, byte_offset) + index * @sizeOf(abi.Passthrough);
+    if (off + @sizeOf(abi.Passthrough) > b.descriptor_size) panicMessage("passthrough table outside descriptor");
+    return @ptrFromInt(descriptorBase() + off);
+}
+
+fn stringAt(b: *const abi.Header, offset: u32) [*:0]const u8 {
+    if (offset < b.string_offset or offset >= b.descriptor_size) panicMessage("string offset outside descriptor");
+    const base: [*]const u8 = @ptrFromInt(descriptorBase());
+    var i: usize = offset;
+    while (i < b.descriptor_size and base[i] != 0) : (i += 1) {}
+    if (i >= b.descriptor_size) panicMessage("unterminated descriptor string");
+    return @ptrFromInt(descriptorBase() + offset);
+}
+
+fn makeDomuName(index: usize, buf: *[16]u8) [*:0]const u8 {
+    const prefix = "domU";
+    @memcpy(buf[0..prefix.len], prefix);
+    var digits: [10]u8 = undefined;
+    var n = index;
+    var count: usize = 0;
+    if (n == 0) {
+        digits[0] = '0';
+        count = 1;
+    } else {
+        while (n != 0) : (n /= 10) {
+            digits[count] = @intCast('0' + (n % 10));
+            count += 1;
+        }
+    }
+    var p = prefix.len;
+    while (count != 0) {
+        count -= 1;
+        buf[p] = digits[count];
+        p += 1;
+    }
+    buf[p] = 0;
+    return @ptrCast(buf);
+}
+
+fn validatePassthroughPaths(tree: *dt.DeviceTree, b: *const abi.Header, d: *const abi.Domain, domain_name: [*:0]const u8) void {
+    var i: usize = 0;
+    while (i < d.passthrough_count) : (i += 1) {
+        const item = passthroughAt(b, d.passthrough_offset, i);
+        const path = stringAt(b, item.path_offset);
+        _ = tree.findNode(path) catch {
+            puts("xloader: passthrough node not found for ");
+            putsZ(domain_name);
+            puts(": ");
+            putsZ(path);
+            puts("\n");
+            panicMessage("invalid passthrough FDT path");
+        };
+        puts("xloader: passthrough request ");
+        putsZ(domain_name);
+        puts(" <- ");
+        putsZ(path);
+        puts("\n");
+    }
+}
+
+fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize) void {
+    if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
+    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v6");
+    if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
+    if (d.vcpus == 0) panicMessage("invalid DomU vCPU count");
+
+    var node_buf: [16]u8 = undefined;
+    const node_name = makeDomuName(index, &node_buf);
+    const domu = tree.addNode(chosen, node_name) catch panicMessage("cannot create DomU node");
+    tree.setU32(domu, "#address-cells", 1) catch panicMessage("cannot set DomU address cells");
+    tree.setU32(domu, "#size-cells", 1) catch panicMessage("cannot set DomU size cells");
+    tree.setString(domu, "compatible", "xen,domain") catch panicMessage("cannot set DomU compatible");
+    tree.setU32Pair(domu, "memory", 0, @intCast(d.memory_kb)) catch panicMessage("cannot set DomU memory");
+    tree.setU32(domu, "cpus", d.vcpus) catch panicMessage("cannot set DomU vCPUs");
+    if ((d.flags & abi.domain_flag_vpl011) != 0) tree.setEmpty(domu, "vpl011") catch panicMessage("cannot enable vpl011");
+
+    const kernel = tree.addNode(domu, "module@0") catch panicMessage("cannot create kernel module");
+    tree.setBytes(kernel, "compatible", kernel_compatible) catch panicMessage("cannot set kernel compatible");
+    tree.setU32Pair(kernel, "reg", @intCast(d.kernel.addr), @intCast(d.kernel.size)) catch panicMessage("cannot set kernel reg");
+    tree.setString(kernel, "bootargs", stringAt(b, d.cmdline_offset)) catch panicMessage("cannot set kernel bootargs");
+
+    if ((d.flags & abi.domain_flag_has_initrd) != 0) {
+        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v6");
+        const ramdisk = tree.addNode(domu, "module@1") catch panicMessage("cannot create initrd module");
+        tree.setBytes(ramdisk, "compatible", ramdisk_compatible) catch panicMessage("cannot set initrd compatible");
+        tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
+    }
+
+    validatePassthroughPaths(tree, b, d, stringAt(b, d.name_offset));
+}
+
+fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
+    var tree = dt.DeviceTree.openInto(source_dtb, dtbWorkspace()) catch panicMessage("cannot open machine DTB with libfdt");
+    const chosen = tree.ensureChosen() catch panicMessage("cannot create /chosen");
+    tree.setString(chosen, "xloader,stage", "v6") catch panicMessage("cannot set xloader DT marker");
+    tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
+
+    var i: usize = 0;
+    while (i < b.domain_count) : (i += 1) addDomu(&tree, chosen, b, domainAt(b, i), i);
+
+    const final_dtb = tree.finish() catch panicMessage("cannot pack prepared DTB");
+    puts("xloader: prepared DTB ");
+    putHex(@intFromPtr(final_dtb.ptr));
+    puts(" size ");
+    putHex(final_dtb.len);
+    puts("\n");
+    return @intFromPtr(final_dtb.ptr);
+}
+
+fn looksLikeFdt(addr: usize) bool {
+    if (addr == 0) return false;
+    const p: [*]const u8 = @ptrFromInt(addr);
+    return p[0] == 0xd0 and p[1] == 0x0d and p[2] == 0xfe and p[3] == 0xed;
+}
+
+fn selectArmDtb(arg0: usize, arg1: usize) usize {
+    if (looksLikeFdt(arg0)) return arg0;
+    if (looksLikeFdt(arg1)) return arg1;
+    if (looksLikeFdt(0x4000_0000)) return 0x4000_0000;
+    return if (arg0 != 0) arg0 else arg1;
+}
+
+fn armBootXen(source_dtb: usize) noreturn {
+    const b = bundle();
+    puts("xloader: domains ");
+    putDec(b.domain_count);
+    puts("\n");
+    const final_dtb = armPrepareDtb(source_dtb, b);
+    puts("xloader: Xen entry ");
+    putHex(@intCast(b.xen_entry));
+    puts("\n");
+    puts("xloader: entering Xen\n");
+    arch_enter_xen(@intCast(b.xen_entry), final_dtb);
+}
+
+pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
+    switch (builtin.cpu.arch) {
+        .aarch64 => {
+            puts("xloader: hello from position-independent aarch64 Zig core\n");
+            const dtb = selectArmDtb(boot_info, boot_magic);
+            armBootXen(dtb);
+        },
+        .x86_64 => {
+            puts("xloader: hello from x86_64 Zig core\n");
+            puts("xloader: Multiboot info ");
+            putHex(boot_info);
+            puts(" magic ");
+            putHex(boot_magic);
+            puts("\n");
+            if (xbundle_storage.header.validBasic()) puts("xloader: v6 descriptor present; x86 Xen handoff deferred\n")
+            else puts("xloader: no bundle descriptor\n");
+        },
+        else => unreachable,
+    }
+    halt();
+}
