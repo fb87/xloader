@@ -1,43 +1,67 @@
-# Binary inputs and Nix store policy
+# Binary inputs and Nix-store policy
 
-The project avoids rebuilding Xen and Linux while iterating on xloader.
+The project uses Nix derivations for all external boot inputs and intermediate
+artifacts. There are no repository fetch/preparation scripts.
 
-## Linux
+## Linux AArch64
 
-Both target architectures use the kernel derivation from the pinned
-`nixos-26.05-small` input. `scripts/nix-inputs.sh` resolves the kernel output
-name (`Image`/`bzImage`) from Nixpkgs rather than hard-coding it.
+The sample kernel comes from the `aarch64-linux` package set of the pinned
+`nixos-26.05-small` input:
 
-## Xen x86_64
+```nix
+linuxAarch64 = aarch64Pkgs.linuxPackages.kernel;
+linuxImage = "${linuxAarch64}/${linuxAarch64.target}";
+```
 
-The x86_64 Xen boot output is taken from `pkgs.xen.boot`. Fetch commands use
-`nix build --max-jobs 0`, so a missing binary substitute is an error rather
-than an unexpected local Xen build.
+The kernel output is consumed directly as the raw Arm64 `Image`. `xbundle`
+does not parse it as ELF.
 
 ## Xen AArch64
 
-NixOS currently restricts its Xen integration to x86_64. Therefore we do not
-claim `pkgs.xen` is a reliable cached AArch64 source.
+The ARM64 Xen sample is a prebuilt distribution package declared as a flake
+`file+https` input. Once `flake.lock` exists, Nix pins the exact input content.
 
-For QEMU Arm development:
+The derivation graph is:
 
-```bash
-make nix-xen-aarch64
+```text
+xen-aarch64-deb flake input
+        |
+        v
+xen-aarch64-elf
+  dpkg-deb extraction
+  architecture validation
+        |
+        v
+xen-aarch64-raw
+  readelf/nm/objcopy normalization
+        |
+        +-- image.bin
+        `-- meta.toml
 ```
 
-The helper:
+No Xen source build occurs in this path.
 
-1. downloads Ubuntu 26.04's prebuilt Xen 4.20 ARM64 `.deb` with
-   `nix store prefetch-file`;
-2. extracts it with `dpkg-deb`;
-3. finds the AArch64 Xen ELF;
-4. imports that exact binary with `nix store add-file`;
-5. records its store path in `build/xen-aarch64.storepath`.
-
-No Xen compilation occurs.
-
-The URL can be overridden:
+Build the normalized Xen input with:
 
 ```bash
-XEN_AARCH64_DEB_URL=https://... make nix-xen-aarch64
+nix build .#xen-aarch64-raw
 ```
+
+## Input inspection
+
+Each normalization result is a normal Nix output and can be inspected without
+running the rest of the pipeline:
+
+```bash
+nix build .#xloader-aarch64-raw
+cat result/meta.toml
+
+nix build .#xen-aarch64-raw
+cat result/meta.toml
+```
+
+## Cache behavior
+
+Nix naturally reuses store objects and configured binary caches. The project
+source no longer maintains mutable `build/*.storepath` files or symlink farms.
+Inputs are connected through derivation dependencies instead.

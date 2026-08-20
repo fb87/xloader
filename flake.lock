@@ -19,7 +19,20 @@
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "xen-aarch64-deb": "xen-aarch64-deb",
         "zig-toml": "zig-toml"
+      }
+    },
+    "xen-aarch64-deb": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-WBH7+PbU8GJ+wqit18If22sMO6WKfb07YzonWqQp60Y=",
+        "type": "file",
+        "url": "https://mirrors.qlu.edu.cn/ubuntu/ubuntu/pool/universe/x/xen/xen-hypervisor-4.20-arm64_4.20.2%2B7-g1badcf5035-2build2_arm64.deb"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://mirrors.qlu.edu.cn/ubuntu/ubuntu/pool/universe/x/xen/xen-hypervisor-4.20-arm64_4.20.2%2B7-g1badcf5035-2build2_arm64.deb"
       }
     },
     "zig-toml": {

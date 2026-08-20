@@ -122,7 +122,7 @@ pub const DeviceTree = struct {
     /// Build a trusted partial DT in `dst` using paths from the current host DT.
     /// Selected paths are recreated below /passthrough so Xen can merge them
     /// into the guest tree. Common properties that carry external phandle
-    /// dependencies are rejected in v7 rather than silently producing an
+    /// dependencies are rejected in v9 rather than silently producing an
     /// invalid partial tree.
     pub fn buildPassthroughTree(self: *DeviceTree, paths: []const [*:0]const u8, dst: []u8) Error![]u8 {
         var out = try DeviceTree.createEmpty(dst);

@@ -1,6 +1,8 @@
+> **Historical milestone document.** For the current build and orchestration model, use `docs/design.md` and the flake outputs.
+
 # Implementation status
 
-> **Historical note:** This document describes earlier milestones. The canonical v8 architecture is [`design.md`](design.md), which uses raw executable inputs plus metadata sidecars and no ELF input parsing in `xbundle`.
+> **Historical note:** This document describes earlier milestones. The canonical current architecture is [`design.md`](design.md), which uses raw executable inputs plus metadata sidecars and no ELF input parsing in `xbundle`.
 
 
 ## M0

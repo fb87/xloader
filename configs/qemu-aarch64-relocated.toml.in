@@ -1,39 +1,38 @@
-# xloader v8 bootable QEMU/AArch64 sample.
+# xloader v9 relocated PIC acceptance sample.
 #
-# Prepare its stable input links and initramfs with:
-#   make prepare-sample-aarch64
-# Then build and boot with:
-#   make sample-aarch64
-#   make smoke-sample-aarch64
+# Materialize the concrete bootable manifest with:
+#   nix build .#sample-config-aarch64
+# Build the final bundle with:
+#   nix build .#sample-bundle-aarch64
 
 format = 1
 
 [bundle]
-output = "build/qemu-aarch64.xbundle.elf"
+output = "build/qemu-aarch64-relocated.xbundle.elf"
 
 [platform]
 arch = "aarch64"
 
 [loader]
-image = "build/inputs/aarch64/xloader.bin"
-metadata = "build/inputs/aarch64/xloader.meta.toml"
+image = "@XLOADER_BIN@"
+metadata = "@XLOADER_META@"
 
 [xen]
-image = "build/inputs/aarch64/xen.bin"
-metadata = "build/inputs/aarch64/xen.meta.toml"
+image = "@XEN_BIN@"
+metadata = "@XEN_META@"
 cmdline = "console=dtuart dtuart=serial0 conswitch=ax"
 
 # Placement is a host-side policy. xloader itself is linked position-independently.
 [layout]
-loader_base = "0x40200000"
-xen_base = "0x40600000"
+loader_base = "0x42080000"
+xen_base = "0x42400000"
 payload_alignment = "2M"
 
 [[domain]]
 name = "guest0"
-kernel = "build/inputs/aarch64/linux"
+kernel = "@LINUX_IMAGE@"
 kernel_format = "linux-image"
-initrd = "build/inputs/aarch64/initramfs.cpio"
+initrd = "@INITRAMFS@"
 memory = "256M"
 vcpus = 1
 cmdline = "console=ttyAMA0 rdinit=/init xloader.domain=guest0"
@@ -41,9 +40,9 @@ vpl011 = true
 
 [[domain]]
 name = "guest1"
-kernel = "build/inputs/aarch64/linux"
+kernel = "@LINUX_IMAGE@"
 kernel_format = "linux-image"
-initrd = "build/inputs/aarch64/initramfs.cpio"
+initrd = "@INITRAMFS@"
 memory = "256M"
 vcpus = 1
 cmdline = "console=ttyAMA0 rdinit=/init xloader.domain=guest1"
@@ -54,6 +53,6 @@ vpl011 = true
 # [[domain.passthrough]]
 # path = "/soc/i2c@12340000"
 #
-# v8 carries these paths in the descriptor and validates that they exist in
+# v9 carries these paths in the descriptor and validates that they exist in
 # the boot-time machine DT. External phandle dependencies are rejected conservatively. MMIO/IOMMU
 # resource-assignment policy is intentionally a later milestone.

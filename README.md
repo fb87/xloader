@@ -1,10 +1,15 @@
-# xloader v8
+# xloader v9
 
-`xloader` packages a static Xen system into one bootable ELF. v8 switches the
-host pipeline to **raw inputs only**: `xbundle` no longer parses loader or Xen
-ELF files.
+`xloader` packages a statically described Xen system into one bootable ELF.
+The runtime loader is small and position independent; the host-side system
+compiler is `xbundle`.
 
-See [docs/design.md](docs/design.md) for the canonical architecture.
+v9 makes the development and image-construction pipeline **Nix-native**. There
+are no repository shell scripts and no Makefile orchestration. Nix derivations
+own compilation, ELF-to-raw normalization, initramfs generation, manifest
+materialization, bundle construction, inspection, and QEMU acceptance checks.
+
+See [`docs/design.md`](docs/design.md) for the canonical architecture.
 
 ## Development environment
 
@@ -12,114 +17,127 @@ See [docs/design.md](docs/design.md) for the canonical architecture.
 nix develop
 ```
 
-The flake is pinned to `nixos-26.05-small` and provides Zig 0.16, QEMU,
-binutils, libfdt sources, cpio, BusyBox inputs, and the TOML parser source.
+The flake is pinned to `nixos-26.05-small`.
 
-## Build
+## Build individual components
 
 ```bash
-make clean
-make all
-make test
+nix build .#xbundle
+nix build .#xloader-aarch64
+nix build .#xloader-x86_64
 ```
 
-`make all` still creates intermediate executable ELFs because the compiler and
-linker naturally produce them. They are **normalization inputs**, not xbundle
-inputs.
+The target loader ELFs are build intermediates. `xbundle` never parses them.
+Nix normalizes executable components into raw bytes plus metadata:
 
-## Raw normalization
+```bash
+nix build .#xloader-aarch64-raw
+nix build .#xen-aarch64-raw
+```
 
-The sample preparation performs:
+Each normalized output contains:
 
 ```text
-xloader-aarch64.elf
-    -> xloader.bin + xloader.meta.toml
-
-prebuilt Xen ELF
-    -> xen.bin + xen.meta.toml
-
-Linux Image
-    -> already raw, no conversion
+result/
+├── image.bin
+└── meta.toml
 ```
-
-The normalizer is:
-
-```bash
-scripts/normalize-elf.sh
-```
-
-It uses `readelf`, `nm`, and `objcopy`. ELF knowledge ends there.
 
 ## Bootable AArch64 sample
 
-The dedicated checked-in sample is:
+The checked-in human-readable template is:
 
 ```text
-configs/qemu-aarch64.toml
+configs/qemu-aarch64.toml.in
 ```
 
-It defines two static DomUs and uses the pinned Nix-store Linux `Image` plus a
-small generated static initramfs.
-
-Run:
+Nix substitutes exact store paths for the loader, Xen, Linux `Image`, and
+initramfs to create the concrete bootable manifest:
 
 ```bash
-make prepare-sample-aarch64
-make check-sample-aarch64
-make plan-sample-aarch64
-make sample-aarch64
-make inspect-sample-aarch64
-make smoke-sample-aarch64
+nix build .#sample-config-aarch64
+cat result
 ```
 
-The smoke acceptance is:
+Build the final system image:
+
+```bash
+nix build .#sample-bundle-aarch64
+```
+
+The output contains:
+
+```text
+result/
+├── system.xbundle.elf
+├── check.txt
+├── plan.txt
+├── inspect.txt
+├── file.txt
+└── readelf.txt
+```
+
+Run the full Xen + two-DomU acceptance as a Nix derivation:
+
+```bash
+nix build .#smoke-sample-aarch64
+cat result/system.log
+```
+
+Acceptance requires both guests to reach their static `/init`:
 
 ```text
 guest0: xloader sample userspace reached
 guest1: xloader sample userspace reached
 ```
 
-## Raw-input manifest
+## Position-independence acceptance
 
-```toml
-format = 1
+The relocated sample uses the exact same normalized `xloader.bin` but a
+different loader base:
 
-[bundle]
-output = "build/qemu-aarch64.xbundle.elf"
-
-[platform]
-arch = "aarch64"
-
-[loader]
-image = "build/inputs/aarch64/xloader.bin"
-metadata = "build/inputs/aarch64/xloader.meta.toml"
-
-[xen]
-image = "build/inputs/aarch64/xen.bin"
-metadata = "build/inputs/aarch64/xen.meta.toml"
-cmdline = "console=dtuart dtuart=serial0 conswitch=ax"
-
-[[domain]]
-name = "guest0"
-kernel = "build/inputs/aarch64/linux"
-kernel_format = "linux-image"
-initrd = "build/inputs/aarch64/initramfs.cpio"
-memory = "256M"
-vcpus = 1
-cmdline = "console=ttyAMA0 rdinit=/init xloader.domain=guest0"
+```bash
+nix build .#sample-bundle-aarch64-relocated
+nix build .#smoke-pic-aarch64
 ```
 
-`xbundle` parses TOML and raw metadata only. It writes the final boot ELF
-itself.
+## Loader-only smoke tests
 
-## Commands
+```bash
+nix build .#smoke-loader-aarch64
+nix build .#smoke-loader-x86_64
+```
+
+The x86_64 smoke derivation creates its GRUB ISO entirely inside Nix.
+
+## Flake validation
+
+```bash
+nix flake check
+```
+
+The default checks build `xbundle`, both loader architectures, both loader
+smokes, and the AArch64 sample bundle. The longer full Xen/Linux smoke remains
+an explicit package so normal `nix flake check` does not always boot two VMs.
+
+## Raw-input architecture
+
+The core pipeline is:
 
 ```text
-xbundle abi
-xbundle check system.toml
-xbundle plan system.toml
-xbundle build system.toml
-xbundle inspect system.xbundle.elf
+xloader ELF ──Nix normalize──> xloader.bin + meta.toml
+Xen ELF    ──Nix normalize──> xen.bin     + meta.toml
+Linux Image ─────────────────> raw Image
+initramfs  ──Nix derivation─> raw cpio
+                                  │
+                                  v
+                         concrete system.toml
+                                  │
+                                  v
+                               xbundle
+                                  │
+                                  v
+                         system.xbundle.elf
 ```
 
-There is deliberately no `xbundle probe <elf>` command anymore.
+There is deliberately no generic ELF parser in `xbundle`.

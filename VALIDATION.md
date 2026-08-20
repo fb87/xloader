@@ -1,63 +1,97 @@
-# v8 Validation Status
+# v9 Validation Status
 
 ## What changed
 
-v8 changes the bundle input architecture:
+v9 replaces repository shell-script and Makefile orchestration with a Nix
+build graph.
 
-- `xbundle` no longer parses xloader or Xen ELF inputs;
-- executable source artifacts are normalized outside xbundle to `*.bin` plus
-  `*.meta.toml`;
-- Linux AArch64 `Image` remains a raw payload;
-- initramfs remains a raw payload;
-- `xbundle` still emits the final bootable ELF directly;
-- `docs/design.md` is the canonical design document.
+Nix derivations now own:
 
-## Checks performed in this environment
+- xbundle build;
+- AArch64 and x86_64 xloader builds;
+- extraction of the prebuilt AArch64 Xen ELF;
+- ELF-to-raw normalization;
+- static sample initramfs generation;
+- bootable TOML manifest materialization;
+- bundle check/plan/build/inspect;
+- GRUB ISO construction;
+- loader QEMU smokes;
+- Xen + two-DomU QEMU smoke;
+- PIC relocation smoke.
 
-The available environment does not contain Zig, Nix, or QEMU, therefore full
-build/boot acceptance cannot be claimed here.
+`docs/design.md` is updated to make this the canonical pipeline.
 
-Performed successfully:
+## Static checks performed in this environment
 
-- shell syntax check for every script;
-- TOML syntax check for all checked-in sample manifests;
-- source check that `src/xbundle.zig` no longer contains the previous generic
-  `Elf64` input parser or `xbundle probe` command;
-- Zig-source check that no identifier uses the reserved word `align`;
-- `normalize-elf.sh` smoke-tested with a locally generated ELF;
-- normalization entry offset translated through the containing `PT_LOAD`;
-- normalization preserves the full PT_LOAD file-backed span even when
-  `objcopy -O binary` trims trailing zero bytes;
-- descriptor symbol offset confirmed to remain inside the padded raw loader;
-- metadata `memory_size` confirmed to cover the raw file plus trailing BSS.
+This execution environment does not contain Nix, Zig, or QEMU, therefore Nix
+evaluation and full boot acceptance cannot be claimed here.
 
-## Required acceptance on a Nix development machine
+Performed here:
+
+- repository `scripts/` directory removed;
+- repository Makefile removed;
+- checked-in operational flow contains no `.sh` files;
+- active README/design/Nix-input documentation converted to `nix build` flow;
+- GRUB ISO path checked against the Nix-installed x86 loader filename;
+- all checked-in AArch64 TOML templates contain only Nix substitution
+  placeholders for external artifacts;
+- `boot_magic` pointless discard remains absent;
+- Zig identifiers do not use `align` as a variable/field name;
+- raw-input xbundle architecture remains unchanged.
+
+## Required acceptance on a Nix machine
+
+First lock the inputs if this checkout does not yet have `flake.lock`:
 
 ```bash
-nix develop
-
-make clean
-make all
-make test
-
-make prepare-sample-aarch64
-make check-sample-aarch64
-make plan-sample-aarch64
-make sample-aarch64
-make inspect-sample-aarch64
-make smoke-sample-aarch64
-make smoke-pic-aarch64
+nix flake lock
 ```
 
-Expected final guest markers:
+Build the core graph:
+
+```bash
+nix build .#xbundle
+nix build .#xloader-aarch64
+nix build .#xloader-x86_64
+nix build .#xloader-aarch64-raw
+nix build .#xen-aarch64-raw
+```
+
+Materialize and inspect the concrete bootable configuration:
+
+```bash
+nix build .#sample-config-aarch64
+cat result
+```
+
+Build the system bundle:
+
+```bash
+nix build .#sample-bundle-aarch64
+cat result/inspect.txt
+```
+
+Run acceptance derivations:
+
+```bash
+nix build .#smoke-loader-aarch64
+nix build .#smoke-loader-x86_64
+nix build .#smoke-sample-aarch64
+nix build .#smoke-pic-aarch64
+```
+
+Expected full-system guest markers:
 
 ```text
 guest0: xloader sample userspace reached
 guest1: xloader sample userspace reached
 ```
 
-`smoke-pic-aarch64` must build two bundles at different loader bases from the
-same normalized `build/inputs/aarch64/xloader.bin` and boot both.
+Finally:
+
+```bash
+nix flake check
+```
 
 ## Important normalization invariant
 
@@ -74,5 +108,5 @@ For xloader specifically:
 descriptor_offset + 64 KiB <= raw file size
 ```
 
-The final bundle ELF uses the raw file size for `p_filesz` and metadata memory
-size for `p_memsz`.
+The final bundle ELF uses raw file size for `p_filesz` and metadata memory size
+for `p_memsz`.

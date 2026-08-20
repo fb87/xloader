@@ -205,7 +205,7 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
     };
     const partial_addr = @intFromPtr(partial.ptr);
     if (partial_addr > 0xffff_ffff or partial.len > 0xffff_ffff)
-        panicMessage("passthrough partial DT must be below 4 GiB in v7");
+        panicMessage("passthrough partial DT must be below 4 GiB in v9");
 
     const module = tree.addNode(domu, "module@2") catch panicMessage("cannot create passthrough DT module");
     tree.setBytes(module, "compatible", devicetree_compatible) catch panicMessage("cannot set passthrough module compatible");
@@ -222,7 +222,7 @@ fn addPassthroughModule(tree: *dt.DeviceTree, domu: dt.Node, b: *const abi.Heade
 
 fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const abi.Domain, index: usize) void {
     if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
-    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v7");
+    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v9");
     if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
     if (d.vcpus == 0) panicMessage("invalid DomU vCPU count");
 
@@ -242,7 +242,7 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
     tree.setString(kernel, "bootargs", stringAt(b, d.cmdline_offset)) catch panicMessage("cannot set kernel bootargs");
 
     if ((d.flags & abi.domain_flag_has_initrd) != 0) {
-        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v7");
+        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v9");
         const ramdisk = tree.addNode(domu, "module@1") catch panicMessage("cannot create initrd module");
         tree.setBytes(ramdisk, "compatible", ramdisk_compatible) catch panicMessage("cannot set initrd compatible");
         tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
@@ -254,7 +254,7 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
 fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
     var tree = dt.DeviceTree.openInto(source_dtb, dtbWorkspace()) catch panicMessage("cannot open machine DTB with libfdt");
     const chosen = tree.ensureChosen() catch panicMessage("cannot create /chosen");
-    tree.setString(chosen, "xloader,stage", "v7") catch panicMessage("cannot set xloader DT marker");
+    tree.setString(chosen, "xloader,stage", "v9") catch panicMessage("cannot set xloader DT marker");
     tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
 
     var i: usize = 0;
@@ -308,7 +308,7 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
             puts(" magic ");
             putHex(boot_magic);
             puts("\n");
-            if (xbundle_storage.header.validBasic()) puts("xloader: v7 descriptor present; x86 Xen handoff deferred\n")
+            if (xbundle_storage.header.validBasic()) puts("xloader: v9 descriptor present; x86 Xen handoff deferred\n")
             else puts("xloader: no bundle descriptor\n");
         },
         else => unreachable,

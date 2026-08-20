@@ -17,7 +17,7 @@ The central design rule is:
 ```text
                          HOST
 
- source/build artifacts
+ Nix derivation outputs
    xloader.elf    Xen ELF       Linux Image      initrd
        |             |               |              |
        |             |               |              |
@@ -125,8 +125,9 @@ load_alignment = "0x200000"
 source = "/nix/store/...-xen"
 ```
 
-The normalization stage may use `readelf`, `nm`, and `objcopy`. This ELF
-knowledge is deliberately outside `xbundle` and outside the target runtime.
+The normalization derivation uses `readelf`, `nm`, and `objcopy`. This ELF
+knowledge is deliberately confined to the Nix build graph: it is outside
+`xbundle` and outside the target runtime.
 
 ### 4.1 Why metadata is required
 
@@ -387,36 +388,142 @@ Architecture code owns:
 AArch64 uses the DT-based Xen handoff. x86_64 retains its Multiboot-specific
 entry/transition and is developed independently from the Arm handoff.
 
-## 13. Nix development model
+## 13. Nix-native development and image pipeline
 
-The project uses the pinned `nixos-26.05-small` input.
+Nix is the orchestration layer for the complete project. Repository shell
+scripts and Makefile orchestration are intentionally absent.
 
-Nix provides:
-
-- Zig 0.16 toolchain;
-- QEMU;
-- binutils normalization tools;
-- libfdt sources;
-- Linux kernel `Image` from the store;
-- static BusyBox for the sample initramfs;
-- cached/prebuilt Xen input where available.
-
-The project does not rebuild Linux for the QEMU sample.
-
-AArch64 sample flow:
+The flake is pinned to `nixos-26.05-small` and provides independent
+derivations for:
 
 ```text
-make all
-make prepare-sample-aarch64
-make check-sample-aarch64
-make plan-sample-aarch64
-make sample-aarch64
-make inspect-sample-aarch64
-make smoke-sample-aarch64
+xbundle
+xloader-aarch64
+xloader-x86_64
+xen-aarch64-elf
+xloader-aarch64-raw
+xen-aarch64-raw
+sample-initramfs-aarch64
+sample-config-aarch64
+sample-bundle-aarch64
+sample-bundle-aarch64-relocated
+smoke-loader-aarch64
+smoke-loader-x86_64
+smoke-sample-aarch64
+smoke-pic-aarch64
 ```
 
-`prepare-sample-aarch64` is responsible for normalization. Therefore by the
-time `xbundle` runs, every executable input is already raw.
+### 13.1 Executable normalization
+
+Normalization is a Nix derivation, not an xbundle operation. The dependency
+graph is:
+
+```text
+xloader source
+    |
+    v
+xloader-aarch64 ELF
+    |
+    v
+normalize derivation
+    |
+    +-- image.bin
+    `-- meta.toml
+
+prebuilt Xen package
+    |
+    v
+extract Xen ELF derivation
+    |
+    v
+normalize derivation
+    |
+    +-- image.bin
+    `-- meta.toml
+```
+
+Each intermediate is an immutable Nix-store object and can therefore be
+cached, inspected, and reused independently.
+
+### 13.2 Linux and initramfs inputs
+
+The sample Linux `Image` is referenced directly from the target-architecture
+Nixpkgs kernel output. It is already a raw Arm64 boot image and is never
+normalized as ELF.
+
+The sample initramfs is its own derivation. It copies the target static BusyBox
+into a deterministic `newc` archive and installs an `/init` that reports the
+domain identity from `xloader.domain=`.
+
+### 13.3 Bootable configuration materialization
+
+The checked-in source is a stable template:
+
+```text
+configs/qemu-aarch64.toml.in
+```
+
+It contains symbolic input placeholders rather than Nix-store hashes. The
+`sample-config-aarch64` derivation replaces those placeholders with exact
+store paths and produces a concrete `system.toml` that is directly accepted by
+`xbundle`.
+
+Thus the human configuration remains readable while the build input is fully
+resolved and reproducible.
+
+### 13.4 Bundle build
+
+```bash
+nix build .#sample-bundle-aarch64
+```
+
+performs, in dependency order:
+
+```text
+build PIC xloader
+extract prebuilt Xen
+normalize both executables
+resolve cached Linux Image
+build static initramfs
+materialize system.toml
+xbundle check
+xbundle plan
+xbundle build
+xbundle inspect
+```
+
+The final derivation exports the boot ELF together with check, plan, inspect,
+`file`, and `readelf` reports.
+
+### 13.5 Acceptance as derivations
+
+Loader-only and full-system QEMU tests are Nix derivations as well.
+
+```bash
+nix build .#smoke-loader-aarch64
+nix build .#smoke-loader-x86_64
+nix build .#smoke-sample-aarch64
+nix build .#smoke-pic-aarch64
+```
+
+The full sample acceptance requires:
+
+```text
+xloader reaches Xen
+Xen starts two static domains
+guest0 reaches /init
+guest1 reaches /init
+```
+
+The PIC acceptance builds a second bundle with a different loader placement
+from the exact same normalized loader store object.
+
+### 13.6 External prebuilt Xen
+
+Nixpkgs supplies the Linux kernel input. For the AArch64 sample, Xen is taken
+from a prebuilt ARM64 distribution package declared as a locked flake file
+input. A Nix derivation extracts the hypervisor ELF and then normalizes it.
+The sample pipeline does not compile Xen from source.
 
 ## 14. Acceptance criteria
 
