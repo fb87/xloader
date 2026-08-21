@@ -68,8 +68,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "abi")) {
-        std.debug.print("xbundle ABI v{d}: header={d} domain={d} passthrough={d} capacity={d}\n",
-            .{ abi.version, @sizeOf(abi.Header), @sizeOf(abi.Domain), @sizeOf(abi.Passthrough), abi.descriptor_capacity });
+        std.debug.print("xbundle ABI v{d}: header={d} domain={d} passthrough={d} capacity={d}\n", .{ abi.version, @sizeOf(abi.Header), @sizeOf(abi.Domain), @sizeOf(abi.Passthrough), abi.descriptor_capacity });
         return;
     }
     if (std.mem.eql(u8, args[1], "inspect")) {
@@ -78,10 +77,12 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const mode: Mode = if (std.mem.eql(u8, args[1], "check")) .check
-        else if (std.mem.eql(u8, args[1], "plan")) .plan
-        else if (std.mem.eql(u8, args[1], "build")) .build
-        else fatal("unknown command: {s}\n", .{args[1]});
+    const mode: Mode = blk: {
+        if (std.mem.eql(u8, args[1], "check")) break :blk .check;
+        if (std.mem.eql(u8, args[1], "plan")) break :blk .plan;
+        if (std.mem.eql(u8, args[1], "build")) break :blk .build;
+        fatal("unknown command: {s}\n", .{args[1]});
+    };
 
     if (args.len < 3) fatal("{s} requires <system.toml>\n", .{args[1]});
     var output_override: ?[]const u8 = null;
@@ -112,8 +113,8 @@ fn compileManifest(init: std.process.Init, allocator: std.mem.Allocator, cfg: ma
         fatal("loader descriptor range exceeds raw loader file; descriptor must be file-backed\n", .{});
 
     const layout_cfg = cfg.layout;
-    const loader_base = if (layout_cfg) |l| if (l.loader_base) |s| parseAddress(s) else defaultLoaderBase(machine) else defaultLoaderBase(machine);
-    const xen_base = if (layout_cfg) |l| if (l.xen_base) |s| parseAddress(s) else roundUp(loader_base + loader.memory_size, xen.load_alignment) else roundUp(loader_base + loader.memory_size, xen.load_alignment);
+    const loader_base = if (layout_cfg) |l| parseLoaderBase(l, machine) else defaultLoaderBase(machine);
+    const xen_base = if (layout_cfg) |l| parseXenBase(l, loader_base, loader.memory_size, xen.load_alignment) else roundUp(loader_base + loader.memory_size, xen.load_alignment);
     const payload_alignment = if (layout_cfg) |l| parseSize(l.payload_alignment) else 2 * 1024 * 1024;
     if (!isPowerOfTwo(payload_alignment)) fatal("payload_alignment must be a power of two\n", .{});
     if ((loader_base & (loader.load_alignment - 1)) != 0) fatal("loader_base violates loader metadata alignment\n", .{});
@@ -163,8 +164,14 @@ fn compileManifest(init: std.process.Init, allocator: std.mem.Allocator, cfg: ma
         }
     }
 
-    if (mode == .check) { std.debug.print("  validation: PASS\n", .{}); return; }
-    if (mode == .plan) { std.debug.print("  planned payload end: 0x{x}\n", .{cursor}); return; }
+    if (mode == .check) {
+        std.debug.print("  validation: PASS\n", .{});
+        return;
+    }
+    if (mode == .plan) {
+        std.debug.print("  planned payload end: 0x{x}\n", .{cursor});
+        return;
+    }
 
     const output = output_override orelse cfg.bundle.output;
     try buildCombined(io, allocator, machine, loader, loader_base, xen, xen_base, domains, passthrough_total, cfg.xen.cmdline, payload_alignment, output);
@@ -256,24 +263,39 @@ fn patchDescriptor(dst: []u8, image_size: u64, xen_addr: u64, xen_size: u64, xen
     const string_offset = passthrough_offset + @as(u32, @intCast(passthrough_total * @sizeOf(abi.Passthrough)));
     var string_cursor = string_offset;
 
-    writeU32(dst, 0, abi.magic); writeU16(dst, 4, abi.version); writeU16(dst, 6, @intCast(@sizeOf(abi.Header)));
-    writeU32(dst, 8, 0); writeU32(dst, 12, 0); writeU64(dst, 16, image_size);
-    writeU64(dst, 24, xen_entry); writeU64(dst, 32, xen_addr); writeU64(dst, 40, xen_size);
+    writeU32(dst, 0, abi.magic);
+    writeU16(dst, 4, abi.version);
+    writeU16(dst, 6, @intCast(@sizeOf(abi.Header)));
+    writeU32(dst, 8, 0);
+    writeU32(dst, 12, 0);
+    writeU64(dst, 16, image_size);
+    writeU64(dst, 24, xen_entry);
+    writeU64(dst, 32, xen_addr);
+    writeU64(dst, 40, xen_size);
     writeU32(dst, 48, putString(dst, &string_cursor, xen_cmdline));
-    writeU32(dst, 52, @intCast(domains.len)); writeU32(dst, 56, domain_offset);
-    writeU32(dst, 60, @intCast(passthrough_total)); writeU32(dst, 64, passthrough_offset); writeU32(dst, 68, string_offset);
+    writeU32(dst, 52, @intCast(domains.len));
+    writeU32(dst, 56, domain_offset);
+    writeU32(dst, 60, @intCast(passthrough_total));
+    writeU32(dst, 64, passthrough_offset);
+    writeU32(dst, 68, string_offset);
 
     var pt_index: usize = 0;
     for (domains, 0..) |d, i| {
         const off: usize = @intCast(domain_offset + @as(u32, @intCast(i * @sizeOf(abi.Domain))));
         const flags: u32 = (if (d.initrd != null) abi.domain_flag_has_initrd else 0) | (if (d.cfg.vpl011) abi.domain_flag_vpl011 else 0);
-        writeU32(dst, off + 0, abi.domain_type_domu); writeU32(dst, off + 4, flags);
+        writeU32(dst, off + 0, abi.domain_type_domu);
+        writeU32(dst, off + 4, flags);
         writeU32(dst, off + 8, putString(dst, &string_cursor, d.cfg.name));
         writeU32(dst, off + 12, putString(dst, &string_cursor, d.cfg.cmdline));
-        writeU64(dst, off + 16, d.memory_kb); writeU32(dst, off + 24, d.cfg.vcpus); writeU32(dst, off + 28, @intCast(d.cfg.passthrough.len));
-        writeU32(dst, off + 32, passthrough_offset + @as(u32, @intCast(pt_index * @sizeOf(abi.Passthrough)))); writeU32(dst, off + 36, 0);
-        writeU64(dst, off + 40, d.kernel_addr); writeU64(dst, off + 48, @intCast(d.kernel.len));
-        writeU64(dst, off + 56, d.initrd_addr); writeU64(dst, off + 64, if (d.initrd) |r| @intCast(r.len) else 0);
+        writeU64(dst, off + 16, d.memory_kb);
+        writeU32(dst, off + 24, d.cfg.vcpus);
+        writeU32(dst, off + 28, @intCast(d.cfg.passthrough.len));
+        writeU32(dst, off + 32, passthrough_offset + @as(u32, @intCast(pt_index * @sizeOf(abi.Passthrough))));
+        writeU32(dst, off + 36, 0);
+        writeU64(dst, off + 40, d.kernel_addr);
+        writeU64(dst, off + 48, @intCast(d.kernel.len));
+        writeU64(dst, off + 56, d.initrd_addr);
+        writeU64(dst, off + 64, if (d.initrd) |r| @intCast(r.len) else 0);
         for (d.cfg.passthrough) |pt| {
             const poff: usize = @intCast(passthrough_offset + @as(u32, @intCast(pt_index * @sizeOf(abi.Passthrough))));
             const mmio = pt.mmio.?;
@@ -305,7 +327,8 @@ fn patchDescriptor(dst: []u8, image_size: u64, xen_addr: u64, xen_size: u64, xen
         }
     }
     if (@as(usize, string_cursor) > abi.descriptor_capacity) fatal("bundle descriptor exceeds {d} bytes\n", .{abi.descriptor_capacity});
-    writeU32(dst, 72, string_cursor - string_offset); writeU32(dst, 8, string_cursor);
+    writeU32(dst, 72, string_cursor - string_offset);
+    writeU32(dst, 8, string_cursor);
 }
 
 fn validateDomainConfig(d: manifest.DomainConfig, index: usize, all: []const manifest.DomainConfig) void {
@@ -340,7 +363,6 @@ fn validateDomainKernel(d: manifest.DomainConfig, data: []const u8, machine: u16
     fatal("domain '{s}': unsupported kernel_format '{s}'\n", .{ d.name, d.kernel_format });
 }
 
-
 fn parseIrqType(s: []const u8) u32 {
     if (std.mem.eql(u8, s, "spi")) return abi.irq_type_spi;
     if (std.mem.eql(u8, s, "ppi")) return abi.irq_type_ppi;
@@ -354,41 +376,67 @@ fn validatePassthroughPath(domain_name: []const u8, path: []const u8) void {
 
 fn writeElfHeader(out: []u8, machine: u16, entry: u64, phnum: u16) void {
     @memset(out[0..64], 0);
-    out[0] = 0x7f; out[1] = 'E'; out[2] = 'L'; out[3] = 'F'; out[4] = 2; out[5] = 1; out[6] = 1;
-    writeU16(out, 16, ET_EXEC); writeU16(out, 18, machine); writeU32(out, 20, 1); writeU64(out, 24, entry); writeU64(out, 32, 64);
-    writeU16(out, 52, 64); writeU16(out, 54, 56); writeU16(out, 56, phnum);
+    out[0] = 0x7f;
+    out[1] = 'E';
+    out[2] = 'L';
+    out[3] = 'F';
+    out[4] = 2;
+    out[5] = 1;
+    out[6] = 1;
+    writeU16(out, 16, ET_EXEC);
+    writeU16(out, 18, machine);
+    writeU32(out, 20, 1);
+    writeU64(out, 24, entry);
+    writeU64(out, 32, 64);
+    writeU16(out, 52, 64);
+    writeU16(out, 54, 56);
+    writeU16(out, 56, phnum);
 }
 
 fn writeProgramHeader(out: []u8, idx: usize, seg: OutSeg) void {
     const o = 64 + idx * 56;
-    writeU32(out, o, PT_LOAD); writeU32(out, o + 4, seg.flags); writeU64(out, o + 8, seg.out_off);
-    writeU64(out, o + 16, seg.paddr); writeU64(out, o + 24, seg.paddr); writeU64(out, o + 32, seg.filesz); writeU64(out, o + 40, seg.memsz); writeU64(out, o + 48, seg.section_alignment);
+    writeU32(out, o, PT_LOAD);
+    writeU32(out, o + 4, seg.flags);
+    writeU64(out, o + 8, seg.out_off);
+    writeU64(out, o + 16, seg.paddr);
+    writeU64(out, o + 24, seg.paddr);
+    writeU64(out, o + 32, seg.filesz);
+    writeU64(out, o + 40, seg.memsz);
+    writeU64(out, o + 48, seg.section_alignment);
 }
 
 fn inspectBundle(path: []const u8, data: []const u8) void {
     if (data.len < 64 or !std.mem.eql(u8, data[0..4], "\x7fELF")) fatal("{s}: not an xbundle ELF output\n", .{path});
-    const machine = readU16(data, 18); const phoff = readU64(data, 32); const phentsize = readU16(data, 54); const phnum = readU16(data, 56);
+    const machine = readU16(data, 18);
+    const phoff = readU64(data, 32);
+    const phentsize = readU16(data, 54);
+    const phnum = readU16(data, 56);
     if (phentsize < 56) fatal("{s}: malformed program-header table\n", .{path});
     var desc: ?[]const u8 = null;
     var i: usize = 0;
     while (i < @as(usize, phnum)) : (i += 1) {
         const po: usize = @intCast(phoff + @as(u64, phentsize) * @as(u64, @intCast(i)));
         if (po + 56 > data.len or readU32(data, po) != PT_LOAD) continue;
-        const off = readU64(data, po + 8); const filesz = readU64(data, po + 32);
+        const off = readU64(data, po + 8);
+        const filesz = readU64(data, po + 32);
         if (off + filesz > @as(u64, @intCast(data.len))) continue;
         const bytes = data[@intCast(off)..@intCast(off + filesz)];
         var p: usize = 0;
         while (p + @sizeOf(abi.Header) <= bytes.len) : (p += 4) {
             if (readU32(bytes, p) == abi.magic and readU16(bytes, p + 4) == abi.version) {
                 const size: usize = @intCast(readU32(bytes, p + 8));
-                if (size >= @sizeOf(abi.Header) and size <= abi.descriptor_capacity and p + size <= bytes.len) { desc = bytes[p .. p + size]; break; }
+                if (size >= @sizeOf(abi.Header) and size <= abi.descriptor_capacity and p + size <= bytes.len) {
+                    desc = bytes[p .. p + size];
+                    break;
+                }
             }
         }
         if (desc != null) break;
     }
     const d = desc orelse fatal("{s}: xbundle descriptor not found\n", .{path});
     std.debug.print("xbundle inspect: {s}\n  machine: {s}\n  Xen: 0x{x}+0x{x} entry=0x{x}\n", .{ path, machineName(machine), readU64(d, 32), readU64(d, 40), readU64(d, 24) });
-    const domains = readU32(d, 52); const domain_offset = readU32(d, 56);
+    const domains = readU32(d, 52);
+    const domain_offset = readU32(d, 56);
     std.debug.print("  domains: {d}\n", .{domains});
     for (0..@as(usize, domains)) |idx| {
         const off: usize = @intCast(domain_offset + @as(u32, @intCast(idx * @sizeOf(abi.Domain))));
@@ -408,17 +456,75 @@ fn inspectBundle(path: []const u8, data: []const u8) void {
 }
 
 fn descriptorString(desc: []const u8, offset: u32) []const u8 {
-    const start: usize = @intCast(offset); if (start >= desc.len) fatal("descriptor string offset outside descriptor\n", .{});
-    const tail = desc[start..]; const end = std.mem.indexOfScalar(u8, tail, 0) orelse fatal("unterminated descriptor string\n", .{}); return tail[0..end];
+    const start: usize = @intCast(offset);
+    if (start >= desc.len) fatal("descriptor string offset outside descriptor\n", .{});
+    const tail = desc[start..];
+    const end = std.mem.indexOfScalar(u8, tail, 0) orelse fatal("unterminated descriptor string\n", .{});
+    return tail[0..end];
 }
 
-fn machineForArch(s: []const u8) u16 { if (std.mem.eql(u8, s, "aarch64")) return EM_AARCH64; if (std.mem.eql(u8, s, "x86_64")) return EM_X86_64; fatal("unsupported platform.arch '{s}'\n", .{s}); }
-fn machineName(m: u16) []const u8 { if (m == EM_AARCH64) return "aarch64"; if (m == EM_X86_64) return "x86_64"; return "unknown"; }
-fn defaultLoaderBase(m: u16) u64 { if (m == EM_AARCH64) return 0x4008_0000; if (m == EM_X86_64) return 0x0100_0000; unreachable; }
-fn parseSizeOrAddress(s: []const u8) u64 { return if (std.mem.startsWith(u8, s, "0x")) parseAddress(s) else parseSize(s); }
-fn parseSize(s: []const u8) u64 { if (s.len == 0) fatal("empty size\n", .{}); var mult: u64 = 1; var digits = s; switch (s[s.len - 1]) { 'K','k' => { mult=1024; digits=s[0..s.len-1]; }, 'M','m' => { mult=1024*1024; digits=s[0..s.len-1]; }, 'G','g' => { mult=1024*1024*1024; digits=s[0..s.len-1]; }, else => {} } const n=std.fmt.parseUnsigned(u64,digits,10) catch fatal("invalid size: {s}\n",.{s}); return std.math.mul(u64,n,mult) catch fatal("size overflow\n",.{}); }
-fn parseAddress(s: []const u8) u64 { const hex=std.mem.startsWith(u8,s,"0x"); const body=if(hex)s[2..] else s; return std.fmt.parseUnsigned(u64,body,if(hex)16 else 10) catch fatal("invalid address: {s}\n",.{s}); }
-fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 { return std.Io.Dir.cwd().readFileAlloc(io,path,allocator,.limited(1024*1024*1024)) catch |err| fatal("cannot read {s}: {s}\n",.{path,@errorName(err)}); }
+fn machineForArch(s: []const u8) u16 {
+    if (std.mem.eql(u8, s, "aarch64")) return EM_AARCH64;
+    if (std.mem.eql(u8, s, "x86_64")) return EM_X86_64;
+    fatal("unsupported platform.arch '{s}'\n", .{s});
+}
+
+fn machineName(m: u16) []const u8 {
+    if (m == EM_AARCH64) return "aarch64";
+    if (m == EM_X86_64) return "x86_64";
+    return "unknown";
+}
+
+fn defaultLoaderBase(m: u16) u64 {
+    if (m == EM_AARCH64) return 0x4008_0000;
+    if (m == EM_X86_64) return 0x0100_0000;
+    unreachable;
+}
+
+fn parseSizeOrAddress(s: []const u8) u64 {
+    return if (std.mem.startsWith(u8, s, "0x")) parseAddress(s) else parseSize(s);
+}
+
+fn parseLoaderBase(l: *const manifest.LayoutConfig, machine: u16) u64 {
+    return if (l.loader_base) |s| parseAddress(s) else defaultLoaderBase(machine);
+}
+
+fn parseXenBase(l: *const manifest.LayoutConfig, loader_base: u64, loader_mem: u64, xen_alignment: u64) u64 {
+    return if (l.xen_base) |s| parseAddress(s) else roundUp(loader_base + loader_mem, xen_alignment);
+}
+
+fn parseSize(s: []const u8) u64 {
+    if (s.len == 0) fatal("empty size\n", .{});
+    var mult: u64 = 1;
+    var digits = s;
+    switch (s[s.len - 1]) {
+        'K', 'k' => {
+            mult = 1024;
+            digits = s[0 .. s.len - 1];
+        },
+        'M', 'm' => {
+            mult = 1024 * 1024;
+            digits = s[0 .. s.len - 1];
+        },
+        'G', 'g' => {
+            mult = 1024 * 1024 * 1024;
+            digits = s[0 .. s.len - 1];
+        },
+        else => {},
+    }
+    const n = std.fmt.parseUnsigned(u64, digits, 10) catch fatal("invalid size: {s}\n", .{s});
+    return std.math.mul(u64, n, mult) catch fatal("size overflow\n", .{});
+}
+
+fn parseAddress(s: []const u8) u64 {
+    const hex = std.mem.startsWith(u8, s, "0x");
+    const body = if (hex) s[2..] else s;
+    return std.fmt.parseUnsigned(u64, body, if (hex) 16 else 10) catch fatal("invalid address: {s}\n", .{s});
+}
+
+fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024 * 1024)) catch |err| fatal("cannot read {s}: {s}\n", .{ path, @errorName(err) });
+}
 fn roundUp(v: u64, b: u64) u64 {
     if (!isPowerOfTwo(b)) fatal("invalid alignment 0x{x}\n", .{b});
     return checkedEnd(v, b - 1) & ~(b - 1);
@@ -447,7 +553,47 @@ fn rangesOverlap(a: u64, as: u64, b: u64, bs: u64) bool {
 fn checkedEnd(a: u64, b: u64) u64 {
     return std.math.add(u64, a, b) catch fatal("address overflow\n", .{});
 }
-fn putString(dst:[]u8,cursor:*u32,s:[]const u8)u32{const start=cursor.*;const end64=@as(u64,start)+@as(u64,@intCast(s.len))+1;if(end64>@as(u64,@intCast(dst.len)))fatal("descriptor string overflow\n",.{});const st:usize=@intCast(start);@memcpy(dst[st..st+s.len],s);dst[st+s.len]=0;cursor.*=@intCast(end64);return start;}
-fn readU16(d:[]const u8,o:usize)u16{return @as(u16,d[o])|(@as(u16,d[o+1])<<8);} fn readU32(d:[]const u8,o:usize)u32{return @as(u32,d[o])|(@as(u32,d[o+1])<<8)|(@as(u32,d[o+2])<<16)|(@as(u32,d[o+3])<<24);} fn readU64(d:[]const u8,o:usize)u64{return @as(u64,readU32(d,o))|(@as(u64,readU32(d,o+4))<<32);}
-fn writeU16(d:[]u8,o:usize,v:u16)void{d[o]=@truncate(v);d[o+1]=@truncate(v>>8);} fn writeU32(d:[]u8,o:usize,v:u32)void{d[o]=@truncate(v);d[o+1]=@truncate(v>>8);d[o+2]=@truncate(v>>16);d[o+3]=@truncate(v>>24);} fn writeU64(d:[]u8,o:usize,v:u64)void{writeU32(d,o,@truncate(v));writeU32(d,o+4,@truncate(v>>32));}
-fn fatal(comptime fmt:[]const u8,args:anytype)noreturn{std.debug.print("xbundle: error: "++fmt,args);std.process.exit(1);}
+fn putString(dst: []u8, cursor: *u32, s: []const u8) u32 {
+    const start = cursor.*;
+    const end64 = @as(u64, start) + @as(u64, @intCast(s.len)) + 1;
+    if (end64 > @as(u64, @intCast(dst.len))) fatal("descriptor string overflow\n", .{});
+    const st: usize = @intCast(start);
+    @memcpy(dst[st .. st + s.len], s);
+    dst[st + s.len] = 0;
+    cursor.* = @intCast(end64);
+    return start;
+}
+
+fn readU16(d: []const u8, o: usize) u16 {
+    return @as(u16, d[o]) | (@as(u16, d[o + 1]) << 8);
+}
+
+fn readU32(d: []const u8, o: usize) u32 {
+    return @as(u32, d[o]) | (@as(u32, d[o + 1]) << 8) | (@as(u32, d[o + 2]) << 16) | (@as(u32, d[o + 3]) << 24);
+}
+
+fn readU64(d: []const u8, o: usize) u64 {
+    return @as(u64, readU32(d, o)) | (@as(u64, readU32(d, o + 4)) << 32);
+}
+
+fn writeU16(d: []u8, o: usize, v: u16) void {
+    d[o] = @truncate(v);
+    d[o + 1] = @truncate(v >> 8);
+}
+
+fn writeU32(d: []u8, o: usize, v: u32) void {
+    d[o] = @truncate(v);
+    d[o + 1] = @truncate(v >> 8);
+    d[o + 2] = @truncate(v >> 16);
+    d[o + 3] = @truncate(v >> 24);
+}
+
+fn writeU64(d: []u8, o: usize, v: u64) void {
+    writeU32(d, o, @truncate(v));
+    writeU32(d, o + 4, @truncate(v >> 32));
+}
+
+fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("xbundle: error: " ++ fmt, args);
+    std.process.exit(1);
+}

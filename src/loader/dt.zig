@@ -56,7 +56,6 @@ pub const PassthroughSpec = struct {
     _pad2: u64 = 0,
 };
 
-
 pub const DeviceTree = struct {
     buf: []u8,
 
@@ -205,7 +204,7 @@ pub const DeviceTree = struct {
             // layout and re-exposing this QEMU's unaligned-access abort.
             const source_again = try self.findNode(spec.path);
             try self.setEmpty(source_again, "xen,xloader-reserved");
-}
+        }
 
         return try out.finish();
     }

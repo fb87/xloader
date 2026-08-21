@@ -2,7 +2,9 @@ const abi = @import("abi/bundle.zig");
 const dt = @import("loader/dt.zig");
 const builtin = @import("builtin");
 const minic = @import("runtime/minic.zig");
-comptime { _ = minic; }
+comptime {
+    _ = minic;
+}
 
 const pl011_base: usize = 0x0900_0000;
 const kernel_compatible = "multiboot,kernel\x00multiboot,module\x00";
@@ -375,8 +377,7 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
             puts(" magic ");
             putHex(boot_magic);
             puts("\n");
-            if (xbundle_storage.header.validBasic()) puts("xloader: v10 descriptor present; x86 Xen handoff deferred\n")
-            else puts("xloader: no bundle descriptor\n");
+            if (xbundle_storage.header.validBasic()) puts("xloader: v10 descriptor present; x86 Xen handoff deferred\n") else puts("xloader: no bundle descriptor\n");
         },
         else => unreachable,
     }
