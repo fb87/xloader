@@ -48,7 +48,9 @@ pub const Header = extern struct {
     pub fn validBasic(self: *const Header) bool {
         if (self.magic != magic or self.version != version) return false;
         if (@as(usize, self.header_size) < @sizeOf(Header)) return false;
-        if (self.descriptor_size < self.header_size or self.descriptor_size > descriptor_capacity) return false;
+        if (self.descriptor_size < self.header_size or
+            self.descriptor_size > descriptor_capacity)
+            return false;
         if (self.domain_count > sanity_max_domains) return false;
         if (self.passthrough_count > sanity_max_passthrough) return false;
         if (self.xen_entry == 0 or self.xen_addr == 0 or self.xen_size == 0) return false;

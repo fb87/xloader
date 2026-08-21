@@ -26,11 +26,22 @@ extern fn fdt_create_empty_tree(buf: *anyopaque, bufsize: c_int) c_int;
 extern fn fdt_path_offset(fdt: *const anyopaque, path: [*:0]const u8) c_int;
 extern fn fdt_subnode_offset(fdt: *const anyopaque, parentoffset: c_int, name: [*:0]const u8) c_int;
 extern fn fdt_add_subnode(fdt: *anyopaque, parentoffset: c_int, name: [*:0]const u8) c_int;
-extern fn fdt_setprop(fdt: *anyopaque, nodeoffset: c_int, name: [*:0]const u8, val: *const anyopaque, len: c_int) c_int;
+extern fn fdt_setprop(
+    fdt: *anyopaque,
+    nodeoffset: c_int,
+    name: [*:0]const u8,
+    val: *const anyopaque,
+    len: c_int,
+) c_int;
 extern fn fdt_pack(fdt: *anyopaque) c_int;
 extern fn fdt_first_property_offset(fdt: *const anyopaque, nodeoffset: c_int) c_int;
 extern fn fdt_next_property_offset(fdt: *const anyopaque, offset: c_int) c_int;
-extern fn fdt_getprop_by_offset(fdt: *const anyopaque, offset: c_int, namep: *?[*:0]const u8, lenp: *c_int) ?*const anyopaque;
+extern fn fdt_getprop_by_offset(
+    fdt: *const anyopaque,
+    offset: c_int,
+    namep: *?[*:0]const u8,
+    lenp: *c_int,
+) ?*const anyopaque;
 extern fn fdt_first_subnode(fdt: *const anyopaque, offset: c_int) c_int;
 extern fn fdt_next_subnode(fdt: *const anyopaque, offset: c_int) c_int;
 extern fn fdt_get_name(fdt: *const anyopaque, nodeoffset: c_int, lenp: *c_int) ?[*:0]const u8;
@@ -113,13 +124,32 @@ pub const DeviceTree = struct {
         return .{ .offset = @intCast(off) };
     }
 
-    pub fn setBytes(self: *DeviceTree, node: Node, name: [*:0]const u8, value: []const u8) Error!void {
+    pub fn setBytes(
+        self: *DeviceTree,
+        node: Node,
+        name: [*:0]const u8,
+        value: []const u8,
+    ) Error!void {
         if (value.len > max_c_int) return error.NoSpace;
-        const ptr: *const anyopaque = if (value.len == 0) @ptrCast(&empty_byte) else @ptrCast(value.ptr);
-        try checkRc(fdt_setprop(@ptrCast(self.buf.ptr), @intCast(node.offset), name, ptr, @intCast(value.len)));
+        const ptr: *const anyopaque = if (value.len == 0)
+            @ptrCast(&empty_byte)
+        else
+            @ptrCast(value.ptr);
+        try checkRc(fdt_setprop(
+            @ptrCast(self.buf.ptr),
+            @intCast(node.offset),
+            name,
+            ptr,
+            @intCast(value.len),
+        ));
     }
 
-    pub fn setString(self: *DeviceTree, node: Node, name: [*:0]const u8, value: [*:0]const u8) Error!void {
+    pub fn setString(
+        self: *DeviceTree,
+        node: Node,
+        name: [*:0]const u8,
+        value: [*:0]const u8,
+    ) Error!void {
         const len = cStringLen(value) + 1;
         try self.setBytes(node, name, value[0..len]);
     }
@@ -129,12 +159,24 @@ pub const DeviceTree = struct {
         try self.setBytes(node, name, @as([*]const u8, @ptrCast(&be))[0..4]);
     }
 
-    pub fn setU32Pair(self: *DeviceTree, node: Node, name: [*:0]const u8, first: u32, second: u32) Error!void {
+    pub fn setU32Pair(
+        self: *DeviceTree,
+        node: Node,
+        name: [*:0]const u8,
+        first: u32,
+        second: u32,
+    ) Error!void {
         var cells = [2]u32{ @byteSwap(first), @byteSwap(second) };
         try self.setBytes(node, name, @as([*]const u8, @ptrCast(&cells))[0..8]);
     }
 
-    pub fn setXenReg(self: *DeviceTree, node: Node, host_addr: u64, size: u64, guest_addr: u64) Error!void {
+    pub fn setXenReg(
+        self: *DeviceTree,
+        node: Node,
+        host_addr: u64,
+        size: u64,
+        guest_addr: u64,
+    ) Error!void {
         var cells = [6]u32{
             @byteSwap(@as(u32, @truncate(host_addr >> 32))),
             @byteSwap(@as(u32, @truncate(host_addr))),
@@ -146,7 +188,13 @@ pub const DeviceTree = struct {
         try self.setBytes(node, "xen,reg", @as([*]const u8, @ptrCast(&cells))[0..24]);
     }
 
-    pub fn setInterrupt(self: *DeviceTree, node: Node, irq_type: u32, number: u32, flags: u32) Error!void {
+    pub fn setInterrupt(
+        self: *DeviceTree,
+        node: Node,
+        irq_type: u32,
+        number: u32,
+        flags: u32,
+    ) Error!void {
         var cells = [3]u32{ @byteSwap(irq_type), @byteSwap(number), @byteSwap(flags) };
         try self.setBytes(node, "interrupts", @as([*]const u8, @ptrCast(&cells))[0..12]);
     }
@@ -158,7 +206,11 @@ pub const DeviceTree = struct {
     /// Build a trusted partial DT in `dst` using resource grants compiled
     /// from system.toml. The selected host subtree supplies the guest-visible
     /// binding while xen,reg carries the explicit host-MMIO -> guest-IPA map.
-    pub fn buildPassthroughTree(self: *DeviceTree, specs: []const PassthroughSpec, dst: []u8) Error![]u8 {
+    pub fn buildPassthroughTree(
+        self: *DeviceTree,
+        specs: []const PassthroughSpec,
+        dst: []u8,
+    ) Error![]u8 {
         var out = try DeviceTree.createEmpty(dst);
         const passthrough = try out.addNode(.{ .offset = 0 }, "passthrough");
         // Xen wraps the partial FDT as the guest's /passthrough subtree and
@@ -209,27 +261,53 @@ pub const DeviceTree = struct {
         return try out.finish();
     }
 
-    fn copySubtree(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
+    fn copySubtree(
+        self: *DeviceTree,
+        source: Node,
+        out: *DeviceTree,
+        dest: Node,
+        strip_external_dependencies: bool,
+    ) Error!void {
         try self.copyProperties(source, out, dest, strip_external_dependencies);
 
         var child_off = fdt_first_subnode(@ptrCast(self.buf.ptr), @intCast(source.offset));
         while (child_off >= 0) {
             var name_len: c_int = 0;
-            const child_name = fdt_get_name(@ptrCast(self.buf.ptr), child_off, &name_len) orelse return error.LibFdt;
+            const child_name = fdt_get_name(
+                @ptrCast(self.buf.ptr),
+                child_off,
+                &name_len,
+            ) orelse return error.LibFdt;
             if (name_len <= 0) return error.InvalidTree;
             const out_child = try out.ensureChild(dest, child_name);
-            try self.copySubtree(.{ .offset = @intCast(child_off) }, out, out_child, strip_external_dependencies);
+            try self.copySubtree(
+                .{ .offset = @intCast(child_off) },
+                out,
+                out_child,
+                strip_external_dependencies,
+            );
             child_off = fdt_next_subnode(@ptrCast(self.buf.ptr), child_off);
         }
         if (child_off != -FDT_ERR_NOTFOUND) try checkRc(child_off);
     }
 
-    fn copyProperties(self: *DeviceTree, source: Node, out: *DeviceTree, dest: Node, strip_external_dependencies: bool) Error!void {
+    fn copyProperties(
+        self: *DeviceTree,
+        source: Node,
+        out: *DeviceTree,
+        dest: Node,
+        strip_external_dependencies: bool,
+    ) Error!void {
         var prop_off = fdt_first_property_offset(@ptrCast(self.buf.ptr), @intCast(source.offset));
         while (prop_off >= 0) {
             var prop_name: ?[*:0]const u8 = null;
             var prop_len: c_int = 0;
-            const prop = fdt_getprop_by_offset(@ptrCast(self.buf.ptr), prop_off, &prop_name, &prop_len) orelse return error.LibFdt;
+            const prop = fdt_getprop_by_offset(
+                @ptrCast(self.buf.ptr),
+                prop_off,
+                &prop_name,
+                &prop_len,
+            ) orelse return error.LibFdt;
             if (prop_len < 0 or prop_name == null) return error.LibFdt;
             const name = prop_name.?;
             if (hasUnsupportedExternalDependency(name)) {

@@ -38,7 +38,9 @@ pub export var xbundle_storage: abi.Storage linksection(".xbundle") = .{
 };
 
 var dtb_workspace_words: [dt.workspace_size / @sizeOf(u64)]u64 = undefined;
-var passthrough_workspace_words: [(abi.sanity_max_domains * dt.passthrough_slot_size) / @sizeOf(u64)]u64 = undefined;
+const passthrough_workspace_len =
+    (abi.sanity_max_domains * dt.passthrough_slot_size) / @sizeOf(u64);
+var passthrough_workspace_words: [passthrough_workspace_len]u64 = undefined;
 
 fn dtbWorkspace() []u8 {
     const ptr: [*]u8 = @ptrCast(&dtb_workspace_words);
@@ -120,7 +122,8 @@ fn panicMessage(msg: []const u8) noreturn {
 }
 
 fn bundle() *const abi.Header {
-    if (!xbundle_storage.header.validBasic()) panicMessage("invalid or unpatched xbundle descriptor");
+    if (!xbundle_storage.header.validBasic())
+        panicMessage("invalid or unpatched xbundle descriptor");
     return &xbundle_storage.header;
 }
 
@@ -131,18 +134,25 @@ fn descriptorBase() usize {
 fn domainAt(b: *const abi.Header, index: usize) *const volatile abi.Domain {
     if (index >= b.domain_count) panicMessage("domain index out of range");
     const off = @as(usize, b.domain_offset) + index * @sizeOf(abi.Domain);
-    if (off + @sizeOf(abi.Domain) > b.descriptor_size) panicMessage("domain table outside descriptor");
+    if (off + @sizeOf(abi.Domain) > b.descriptor_size)
+        panicMessage("domain table outside descriptor");
     return @ptrFromInt(descriptorBase() + off);
 }
 
-fn passthroughAt(b: *const abi.Header, byte_offset: u32, index: usize) *const volatile abi.Passthrough {
+fn passthroughAt(
+    b: *const abi.Header,
+    byte_offset: u32,
+    index: usize,
+) *const volatile abi.Passthrough {
     const off = @as(usize, byte_offset) + index * @sizeOf(abi.Passthrough);
-    if (off + @sizeOf(abi.Passthrough) > b.descriptor_size) panicMessage("passthrough table outside descriptor");
+    if (off + @sizeOf(abi.Passthrough) > b.descriptor_size)
+        panicMessage("passthrough table outside descriptor");
     return @ptrFromInt(descriptorBase() + off);
 }
 
 fn stringAt(b: *const abi.Header, offset: u32) [*:0]const u8 {
-    if (offset < b.string_offset or offset >= b.descriptor_size) panicMessage("string offset outside descriptor");
+    if (offset < b.string_offset or offset >= b.descriptor_size)
+        panicMessage("string offset outside descriptor");
     const base: [*]const u8 = @ptrFromInt(descriptorBase());
     var i: usize = offset;
     while (i < b.descriptor_size and base[i] != 0) : (i += 1) {}
@@ -203,7 +213,13 @@ fn buildDomuPath(index: usize, buf: *[32]u8) [*:0]const u8 {
     return @ptrCast(buf);
 }
 
-fn addPassthroughModule(tree: *dt.DeviceTree, b: *const abi.Header, d: *const volatile abi.Domain, index: usize, domain_name: [*:0]const u8) void {
+fn addPassthroughModule(
+    tree: *dt.DeviceTree,
+    b: *const abi.Header,
+    d: *const volatile abi.Domain,
+    index: usize,
+    domain_name: [*:0]const u8,
+) void {
     if (d.passthrough_count == 0) return;
     if (d.passthrough_count > abi.sanity_max_passthrough) panicMessage("invalid passthrough count");
 
@@ -257,8 +273,13 @@ fn addPassthroughModule(tree: *dt.DeviceTree, b: *const abi.Header, d: *const vo
         puts("\n");
     }
 
-    const partial = tree.buildPassthroughTree(specs[0..d.passthrough_count], passthroughSlot(index)) catch |err| switch (err) {
-        error.ExternalDependency => panicMessage("passthrough subtree has external dependency; opt in to stripping or include dependency"),
+    const partial = tree.buildPassthroughTree(
+        specs[0..d.passthrough_count],
+        passthroughSlot(index),
+    ) catch |err| switch (err) {
+        error.ExternalDependency => panicMessage(
+            "passthrough subtree has external dependency; opt in to stripping or include dependency",
+        ),
         error.NoSpace => panicMessage("passthrough partial DT exceeds per-domain workspace"),
         else => panicMessage("cannot build passthrough partial DT"),
     };
@@ -270,10 +291,24 @@ fn addPassthroughModule(tree: *dt.DeviceTree, b: *const abi.Header, d: *const vo
     // offsets, so re-resolve the DomU node before adding module@2.
     var path_buf: [32]u8 = undefined;
     const dom_path = buildDomuPath(index, &path_buf);
-    const domu_now = tree.findNode(dom_path) catch panicMessage("cannot re-resolve passthrough DomU node");
-    const module = tree.addNode(domu_now, "module@2") catch panicMessage("cannot create passthrough DT module");
-    tree.setBytes(module, "compatible", devicetree_compatible) catch panicMessage("cannot set passthrough module compatible");
-    tree.setU32Pair(module, "reg", @intCast(partial_addr), @intCast(partial.len)) catch panicMessage("cannot set passthrough module reg");
+    const domu_now = tree.findNode(dom_path) catch panicMessage(
+        "cannot re-resolve passthrough DomU node",
+    );
+    const module = tree.addNode(
+        domu_now,
+        "module@2",
+    ) catch panicMessage("cannot create passthrough DT module");
+    tree.setBytes(
+        module,
+        "compatible",
+        devicetree_compatible,
+    ) catch panicMessage("cannot set passthrough module compatible");
+    tree.setU32Pair(
+        module,
+        "reg",
+        @intCast(partial_addr),
+        @intCast(partial.len),
+    ) catch panicMessage("cannot set passthrough module reg");
 
     puts("xloader: passthrough DT ");
     putsZ(domain_name);
@@ -284,9 +319,16 @@ fn addPassthroughModule(tree: *dt.DeviceTree, b: *const abi.Header, d: *const vo
     puts("\n");
 }
 
-fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *const volatile abi.Domain, index: usize) void {
+fn addDomu(
+    tree: *dt.DeviceTree,
+    chosen: dt.Node,
+    b: *const abi.Header,
+    d: *const volatile abi.Domain,
+    index: usize,
+) void {
     if (d.domain_type != abi.domain_type_domu) panicMessage("unsupported domain type");
-    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff) panicMessage("DomU kernel must be below 4 GiB in v10");
+    if (d.kernel.addr > 0xffff_ffff or d.kernel.size > 0xffff_ffff)
+        panicMessage("DomU kernel must be below 4 GiB in v10");
     if (d.memory_kb == 0 or d.memory_kb > 0xffff_ffff) panicMessage("invalid DomU memory size");
     if (d.vcpus == 0) panicMessage("invalid DomU vCPU count");
 
@@ -295,31 +337,77 @@ fn addDomu(tree: *dt.DeviceTree, chosen: dt.Node, b: *const abi.Header, d: *cons
     const domu = tree.addNode(chosen, node_name) catch panicMessage("cannot create DomU node");
     tree.setU32(domu, "#address-cells", 1) catch panicMessage("cannot set DomU address cells");
     tree.setU32(domu, "#size-cells", 1) catch panicMessage("cannot set DomU size cells");
-    tree.setString(domu, "compatible", "xen,domain") catch panicMessage("cannot set DomU compatible");
-    tree.setU32Pair(domu, "memory", 0, @intCast(d.memory_kb)) catch panicMessage("cannot set DomU memory");
+    tree.setString(
+        domu,
+        "compatible",
+        "xen,domain",
+    ) catch panicMessage("cannot set DomU compatible");
+    tree.setU32Pair(
+        domu,
+        "memory",
+        0,
+        @intCast(d.memory_kb),
+    ) catch panicMessage("cannot set DomU memory");
     tree.setU32(domu, "cpus", d.vcpus) catch panicMessage("cannot set DomU vCPUs");
-    if ((d.flags & abi.domain_flag_vpl011) != 0) tree.setEmpty(domu, "vpl011") catch panicMessage("cannot enable vpl011");
+    if ((d.flags & abi.domain_flag_vpl011) != 0)
+        tree.setEmpty(domu, "vpl011") catch panicMessage("cannot enable vpl011");
 
     const kernel = tree.addNode(domu, "module@0") catch panicMessage("cannot create kernel module");
-    tree.setBytes(kernel, "compatible", kernel_compatible) catch panicMessage("cannot set kernel compatible");
-    tree.setU32Pair(kernel, "reg", @intCast(d.kernel.addr), @intCast(d.kernel.size)) catch panicMessage("cannot set kernel reg");
-    tree.setString(kernel, "bootargs", stringAt(b, d.cmdline_offset)) catch panicMessage("cannot set kernel bootargs");
+    tree.setBytes(
+        kernel,
+        "compatible",
+        kernel_compatible,
+    ) catch panicMessage("cannot set kernel compatible");
+    tree.setU32Pair(
+        kernel,
+        "reg",
+        @intCast(d.kernel.addr),
+        @intCast(d.kernel.size),
+    ) catch panicMessage("cannot set kernel reg");
+    tree.setString(
+        kernel,
+        "bootargs",
+        stringAt(b, d.cmdline_offset),
+    ) catch panicMessage("cannot set kernel bootargs");
 
     if ((d.flags & abi.domain_flag_has_initrd) != 0) {
-        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff) panicMessage("DomU initrd must be below 4 GiB in v10");
-        const ramdisk = tree.addNode(domu, "module@1") catch panicMessage("cannot create initrd module");
-        tree.setBytes(ramdisk, "compatible", ramdisk_compatible) catch panicMessage("cannot set initrd compatible");
-        tree.setU32Pair(ramdisk, "reg", @intCast(d.initrd.addr), @intCast(d.initrd.size)) catch panicMessage("cannot set initrd reg");
+        if (d.initrd.addr > 0xffff_ffff or d.initrd.size > 0xffff_ffff)
+            panicMessage("DomU initrd must be below 4 GiB in v10");
+        const ramdisk = tree.addNode(domu, "module@1") catch panicMessage(
+            "cannot create initrd module",
+        );
+        tree.setBytes(
+            ramdisk,
+            "compatible",
+            ramdisk_compatible,
+        ) catch panicMessage("cannot set initrd compatible");
+        tree.setU32Pair(
+            ramdisk,
+            "reg",
+            @intCast(d.initrd.addr),
+            @intCast(d.initrd.size),
+        ) catch panicMessage("cannot set initrd reg");
     }
 
     addPassthroughModule(tree, b, d, index, stringAt(b, d.name_offset));
 }
 
 fn armPrepareDtb(source_dtb: usize, b: *const abi.Header) usize {
-    var tree = dt.DeviceTree.openInto(source_dtb, dtbWorkspace()) catch panicMessage("cannot open machine DTB with libfdt");
+    var tree = dt.DeviceTree.openInto(
+        source_dtb,
+        dtbWorkspace(),
+    ) catch panicMessage("cannot open machine DTB with libfdt");
     const chosen = tree.ensureChosen() catch panicMessage("cannot create /chosen");
-    tree.setString(chosen, "xloader,stage", "v10") catch panicMessage("cannot set xloader DT marker");
-    tree.setString(chosen, "xen,xen-bootargs", stringAt(b, b.xen_cmdline_offset)) catch panicMessage("cannot set Xen bootargs");
+    tree.setString(
+        chosen,
+        "xloader,stage",
+        "v10",
+    ) catch panicMessage("cannot set xloader DT marker");
+    tree.setString(
+        chosen,
+        "xen,xen-bootargs",
+        stringAt(b, b.xen_cmdline_offset),
+    ) catch panicMessage("cannot set Xen bootargs");
 
     var i: usize = 0;
     while (i < b.domain_count) : (i += 1) {
@@ -377,7 +465,10 @@ pub export fn xloader_main(boot_info: usize, boot_magic: usize) noreturn {
             puts(" magic ");
             putHex(boot_magic);
             puts("\n");
-            if (xbundle_storage.header.validBasic()) puts("xloader: v10 descriptor present; x86 Xen handoff deferred\n") else puts("xloader: no bundle descriptor\n");
+            if (xbundle_storage.header.validBasic())
+                puts("xloader: v10 descriptor present; x86 Xen handoff deferred\n")
+            else
+                puts("xloader: no bundle descriptor\n");
         },
         else => unreachable,
     }
