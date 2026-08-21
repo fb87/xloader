@@ -1,3 +1,4 @@
+// vim: colorcolumn=100 tabstop=4 shiftwidth=4 autoindent expandtab
 const std = @import("std");
 const toml = @import("toml");
 const abi = @import("abi/bundle.zig");
